@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "ru.ruscrafting"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cross-server proximity giveaways for RusCrafting"
 
 val integrationTestSourceSet = sourceSets.create("integrationTest") {
@@ -45,7 +45,10 @@ tasks {
     processResources {
         filesMatching("plugin.yml") { expand("version" to project.version) }
     }
-    test { useJUnitPlatform() }
+    test {
+        useJUnitPlatform()
+        systemProperty("arcgiveaways.repositoryRoot", projectDir.parentFile.absolutePath)
+    }
     register<Test>("integrationTest") {
         description = "Runs the disposable Redis integration test."
         group = "verification"

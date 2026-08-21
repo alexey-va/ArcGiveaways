@@ -59,7 +59,15 @@ object GiveawayRedisBootstrap {
         RedisConfigBootstrap.ensure(dataRoot) {
             if (existed || !settings.importArcRedis) null else readArcRedis(dataRoot, settings.serverId)
         }
-        val redis = RedisModuleConfig.load(dataRoot)
+        val redisConfig = ConfigManager.ofModule(dataRoot, RedisModuleConfig.RESOURCE)
+        var redis = RedisModuleConfig(redisConfig)
+        val expectedMainServer = settings.serverId == "spawn"
+        if (redis.serverName != settings.serverId || redis.mainServer != expectedMainServer) {
+            redisConfig.setString("server-name", settings.serverId)
+            redisConfig.setBoolean("main-server", expectedMainServer)
+            redisConfig.saveStrict()
+            redis = RedisModuleConfig(redisConfig)
+        }
         require(redis.enabled) { "Redis is mandatory for ArcGiveaways" }
         return redis
     }
