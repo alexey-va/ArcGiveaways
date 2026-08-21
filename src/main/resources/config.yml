@@ -1,0 +1,30 @@
+server-id: spawn
+
+giveaway:
+  radius-blocks: 100.0
+  open-seconds: 45
+  drawing-seconds: 6
+  minimum-participants: 2
+  maximum-participants: 250
+  maximum-item-amount: 64
+  host-cooldown-seconds: 300
+  terminal-retention-minutes: 30
+
+cross-server:
+  enabled: true
+  transfer-on-click: true
+  pending-join-seconds: 45
+
+redis:
+  import-arc-credentials: true
+
+effects:
+  bossbar: true
+  titles: true
+  sounds: true
+  particles: true
+  fireworks: true
+
+locale:
+  default: ru
+  use-client-locale: true
