@@ -20,4 +20,4 @@ radius enter the final draw snapshot.
 ../arc-core/gradlew -p . clean check shadowJar
 ```
 
-The deployable artifact is `build/libs/ArcGiveaways-0.1.0.jar`.
+The deployable artifact is `build/libs/ArcGiveaways-0.1.1.jar`.
