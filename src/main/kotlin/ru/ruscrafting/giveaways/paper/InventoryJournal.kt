@@ -130,18 +130,30 @@ class InventoryPlan private constructor(val changes: List<SlotChange>) {
 
         fun from(changes: List<SlotChange>): InventoryPlan = InventoryPlan(changes)
 
-        private fun same(stack: ItemStack?, encoded: String?): Boolean {
-            val normalized = stack?.takeUnless { it.type.isAir }
-            if (encoded == null) return normalized == null
-            if (normalized == null) return false
-            return runCatching { normalized.serializeAsBytes().contentEquals(Base64.getDecoder().decode(encoded)) }.getOrDefault(false)
-        }
+        private fun same(stack: ItemStack?, encoded: String?): Boolean =
+            InventoryStackMatcher.matchesSerialized(stack, encoded)
 
         private fun encode(stack: ItemStack?): String? =
             stack?.takeUnless { it.type.isAir }?.serializeAsBytes()?.let { Base64.getEncoder().encodeToString(it) }
 
         private fun decode(encoded: String?): ItemStack? =
             encoded?.let { ItemStack.deserializeBytes(Base64.getDecoder().decode(it)) }
+    }
+}
+
+internal object InventoryStackMatcher {
+    fun matchesSerialized(actual: ItemStack?, expectedBase64: String?): Boolean {
+        val normalizedActual = actual?.takeUnless { it.type.isAir }
+        if (expectedBase64 == null) return normalizedActual == null
+        val expected = runCatching {
+            ItemStack.deserializeBytes(Base64.getDecoder().decode(expectedBase64))
+        }.getOrNull()?.takeUnless { it.type.isAir } ?: return false
+        return matches(normalizedActual, expected)
+    }
+
+    fun matches(actual: ItemStack?, expected: ItemStack?): Boolean {
+        if (actual == null || expected == null) return actual == null && expected == null
+        return runCatching { actual.amount == expected.amount && actual.isSimilar(expected) }.getOrDefault(false)
     }
 }
 

@@ -12,6 +12,7 @@ class GiveawayCommand(
     private val service: GiveawayService,
     private val locale: GiveawayLocale,
     private val reload: () -> Result<Unit>,
+    private val qaReport: (String?) -> List<String> = service::qaReport,
 ) : CommandExecutor, TabCompleter {
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         if (args.isEmpty()) {
@@ -19,15 +20,19 @@ class GiveawayCommand(
             return true
         }
         val subcommand = args[0].lowercase()
-        if (subcommand == "reload") {
+        if (subcommand == "reload" || subcommand == "qa") {
             if (!sender.hasPermission("arcgiveaways.admin")) {
                 sender.sendMessage(locale.render(MessageKey.NO_PERMISSION, sender))
                 return true
             }
-            reload().fold(
-                onSuccess = { sender.sendMessage(locale.render(MessageKey.RELOAD_OK, sender)) },
-                onFailure = { sender.sendMessage(locale.render(MessageKey.RELOAD_FAILED, sender, mapOf("reason" to locale.text(it.message ?: "unknown")))) },
-            )
+            if (subcommand == "qa") {
+                qaReport(args.getOrNull(1)).forEach(sender::sendMessage)
+            } else {
+                reload().fold(
+                    onSuccess = { sender.sendMessage(locale.render(MessageKey.RELOAD_OK, sender)) },
+                    onFailure = { sender.sendMessage(locale.render(MessageKey.RELOAD_FAILED, sender, mapOf("reason" to locale.text(it.message ?: "unknown")))) },
+                )
+            }
             return true
         }
         val player = sender as? Player
@@ -63,11 +68,14 @@ class GiveawayCommand(
         if (args.size == 1) {
             val available = buildList {
                 addAll(listOf("start", "join", "status", "cancel", "claim"))
-                if (sender.hasPermission("arcgiveaways.admin")) add("reload")
+                if (sender.hasPermission("arcgiveaways.admin")) addAll(listOf("reload", "qa"))
             }
             return available.filter { it.startsWith(args[0], ignoreCase = true) }
         }
         if (args.size == 2 && args[0].equals("join", true)) {
+            return service.activeRecords().map { it.displayId() }.filter { it.startsWith(args[1], true) }
+        }
+        if (args.size == 2 && args[0].equals("qa", true) && sender.hasPermission("arcgiveaways.admin")) {
             return service.activeRecords().map { it.displayId() }.filter { it.startsWith(args[1], true) }
         }
         return emptyList()

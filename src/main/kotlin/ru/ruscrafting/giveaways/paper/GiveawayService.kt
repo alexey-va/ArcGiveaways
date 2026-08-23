@@ -89,6 +89,33 @@ class GiveawayService(
         cache.values.filter { it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING }
             .sortedBy { it.drawAtMs }
 
+    fun qaReport(idOrPrefix: String?): List<String> {
+        val allIds = (cache.keys + journals.values.map { it.giveawayId }).distinct().sorted()
+        val selectedId = idOrPrefix?.let { value ->
+            val normalized = value.lowercase()
+            allIds.filter { it == normalized || it.startsWith(normalized) }.singleOrNull()
+        }
+        if (idOrPrefix != null && selectedId == null) {
+            return listOf("ARCGIVEAWAYS_QA status=not_found query=${idOrPrefix.take(64)}")
+        }
+        val selectedRecords = if (selectedId == null) cache.values.sortedBy { it.createdAtMs } else listOfNotNull(cache[selectedId])
+        val selectedJournals = journals.values
+            .filter { selectedId == null || it.giveawayId == selectedId }
+            .sortedWith(compareBy(InventoryJournalRecord::giveawayId, { it.kind.name }))
+        val lines = mutableListOf(
+            "ARCGIVEAWAYS_QA status=ok server=${settings.serverId} records=${selectedRecords.size} active=${selectedRecords.count(GiveawayRecord::isActive)} journals=${selectedJournals.size}",
+        )
+        selectedRecords.forEach { record ->
+            lines += "ARCGIVEAWAYS_QA_RECORD id=${record.displayId()} status=${record.status.name} owner=${record.serverId} participants=${record.participants.size} eligible=${if (record.serverId == settings.serverId) eligibleParticipants(record).size else -1} winner=${record.winner != null}"
+        }
+        selectedJournals.forEach { journal ->
+            val player = runCatching { Bukkit.getPlayer(UUID.fromString(journal.playerId)) }.getOrNull()?.takeIf(Player::isOnline)
+            val state = player?.let { InventoryPlan.from(journal.changes).state(it).name } ?: "OFFLINE"
+            lines += "ARCGIVEAWAYS_QA_JOURNAL id=${journal.giveawayId.take(8)} kind=${journal.kind.name} status=${journal.status.name} player=${if (player == null) "OFFLINE" else "ONLINE"} state=$state changes=${journal.changes.size}"
+        }
+        return lines
+    }
+
     fun sendStatus(player: Player) {
         val records = activeRecords()
         if (records.isEmpty()) {
