@@ -56,6 +56,7 @@ class GiveawayService(
     private val winnerAnnounced = mutableSetOf<String>()
     private val countdownSecond = mutableMapOf<String, Int>()
     private val claimNoticeAt = mutableMapOf<UUID, Long>()
+    private val recoveryIncidents = InventoryRecoveryIncidentTracker()
     private val secureRandom = SecureRandom()
     private val channelListener = repository.registerEvents { event, _ -> refresh(event.giveawayId, event.type) }
     private var tickTask: ScheduledTask? = null
@@ -79,6 +80,7 @@ class GiveawayService(
         repository.unregisterEvents(channelListener)
         bossBars.keys.toList().forEach(::removeBossBar)
         inventoryLocks.clear()
+        recoveryIncidents.clearAll()
     }
 
     fun isInventoryLocked(playerId: UUID): Boolean = playerId in inventoryLocks
@@ -465,18 +467,24 @@ class GiveawayService(
         val plan = InventoryPlan.from(journal.changes)
         when (plan.state(player)) {
             PlanState.BEFORE -> {
+                recoveryIncidents.clear(key)
                 if (!plan.apply(player)) return
                 journal = journal.copy(status = JournalStatus.APPLIED)
                 journalStore.write(journal)
                 journals[key] = journal
             }
-            PlanState.AFTER -> if (journal.status != JournalStatus.APPLIED) {
-                journal = journal.copy(status = JournalStatus.APPLIED)
-                journalStore.write(journal)
-                journals[key] = journal
+            PlanState.AFTER -> {
+                recoveryIncidents.clear(key)
+                if (journal.status != JournalStatus.APPLIED) {
+                    journal = journal.copy(status = JournalStatus.APPLIED)
+                    journalStore.write(journal)
+                    journals[key] = journal
+                }
             }
             PlanState.AMBIGUOUS -> {
-                plugin.logger.severe("Ambiguous $kind inventory journal for giveaway ${record.id}; refusing blind retry")
+                if (recoveryIncidents.markAmbiguous(key)) {
+                    plugin.logger.severe("Ambiguous $kind inventory journal for giveaway ${record.id}; refusing blind retry")
+                }
                 return
             }
         }
@@ -496,6 +504,7 @@ class GiveawayService(
                 acceptRecord(terminal)
                 journalStore.delete(record.id, kind)
                 journals.remove(journalKey(record.id, kind))
+                recoveryIncidents.clear(journalKey(record.id, kind))
                 journalStore.delete(record.id, JournalKind.ESCROW)
                 journals.remove(journalKey(record.id, JournalKind.ESCROW))
                 repository.releaseHost(record.hostId, record.id)
@@ -510,17 +519,23 @@ class GiveawayService(
 
     private fun recoverPreparing(record: GiveawayRecord) {
         val host = Bukkit.getPlayer(UUID.fromString(record.hostId))?.takeIf { it.isOnline } ?: return
-        val journal = journals[journalKey(record.id, JournalKind.ESCROW)] ?: return
+        val key = journalKey(record.id, JournalKind.ESCROW)
+        val journal = journals[key] ?: return
         val plan = InventoryPlan.from(journal.changes)
         when (plan.state(host)) {
-            PlanState.BEFORE -> if (plan.apply(host)) {
-                val applied = journal.copy(status = JournalStatus.APPLIED)
-                journalStore.write(applied)
-                journals[journalKey(record.id, JournalKind.ESCROW)] = applied
-            } else return
-            PlanState.AFTER -> Unit
+            PlanState.BEFORE -> {
+                recoveryIncidents.clear(key)
+                if (plan.apply(host)) {
+                    val applied = journal.copy(status = JournalStatus.APPLIED)
+                    journalStore.write(applied)
+                    journals[key] = applied
+                } else return
+            }
+            PlanState.AFTER -> recoveryIncidents.clear(key)
             PlanState.AMBIGUOUS -> {
-                plugin.logger.severe("Ambiguous escrow journal for giveaway ${record.id}; refusing blind recovery")
+                if (recoveryIncidents.markAmbiguous(key)) {
+                    plugin.logger.severe("Ambiguous escrow journal for giveaway ${record.id}; refusing blind recovery")
+                }
                 return
             }
         }

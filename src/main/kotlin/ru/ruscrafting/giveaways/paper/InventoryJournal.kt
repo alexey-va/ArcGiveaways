@@ -12,10 +12,25 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 enum class JournalKind { ESCROW, PRIZE, REFUND }
 enum class JournalStatus { PREPARED, APPLIED }
 enum class PlanState { BEFORE, AFTER, AMBIGUOUS }
+
+internal class InventoryRecoveryIncidentTracker {
+    private val ambiguous = ConcurrentHashMap.newKeySet<String>()
+
+    fun markAmbiguous(journalKey: String): Boolean = ambiguous.add(journalKey)
+
+    fun clear(journalKey: String) {
+        ambiguous.remove(journalKey)
+    }
+
+    fun clearAll() {
+        ambiguous.clear()
+    }
+}
 
 data class SlotChange(
     val slot: Int,
