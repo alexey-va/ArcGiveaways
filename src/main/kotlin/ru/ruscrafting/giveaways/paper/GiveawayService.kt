@@ -1,9 +1,7 @@
 package ru.ruscrafting.giveaways.paper
 
 import net.kyori.adventure.bossbar.BossBar
-import net.kyori.adventure.audience.Audience
 import net.kyori.adventure.text.Component
-import net.kyori.adventure.text.event.ClickCallback
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
 import net.kyori.adventure.title.Title
@@ -727,19 +725,10 @@ class GiveawayService(
                 "seconds", settings.openSeconds,
             )))
             val hoverKey = if (record.serverId == settings.serverId) MessageKey.JOIN_HOVER_LOCAL else MessageKey.JOIN_HOVER_TRANSFER
-            val callback: ClickCallback<Audience> = ClickCallback.widen(
-                ClickCallback<Player> { clickingPlayer ->
-                    Tasks.scheduler.runSync(Runnable {
-                        if (clickingPlayer.isOnline) join(clickingPlayer, record.id)
-                    })
-                },
-                Player::class.java,
-            )
-            val remaining = (record.drawAtMs - clockMs()).coerceAtLeast(1_000L) + 10_000L
             val button = locale.render(MessageKey.JOIN_BUTTON, player)
-                .clickEvent(ClickEvent.callback(callback) { options ->
-                    options.uses(1).lifetime(Duration.ofMillis(remaining))
-                })
+                // Standard RUN_COMMAND survives Velocity/ViaVersion backend routing. Paper's
+                // custom callback packet is currently decoded as chat on the public proxy path.
+                .clickEvent(ClickEvent.runCommand("/giveaway join ${record.id}"))
                 .hoverEvent(HoverEvent.showText(locale.render(hoverKey, player, values(
                     "radius", record.radius.toInt(),
                     "server", locale.serverName(record.serverId, player),
