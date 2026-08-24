@@ -19,6 +19,7 @@ class ArcGiveawaysPlugin : JavaPlugin() {
     private var service: GiveawayService? = null
     private lateinit var settings: GiveawayConfig
     private lateinit var locale: GiveawayLocale
+    private lateinit var itemNames: RussianItemNames
 
     override fun onEnable() {
         saveDefaultConfig()
@@ -30,11 +31,12 @@ class ArcGiveawaysPlugin : JavaPlugin() {
             settings = GiveawayConfig.load(dataFolder.toPath())
             val redisConfig = GiveawayRedisBootstrap.load(dataFolder.toPath(), settings)
             locale = GiveawayLocale(dataFolder.toPath()) { settings }
+            itemNames = RussianItemNames(dataFolder.toPath().resolveSibling("ARC").resolve("lang.json"), logger)
             val manager = RedisManager(redisConfig.connection(), ServerIdentity { settings.serverId }, LoggerFactory.getLogger("ArcGiveaways.Redis"))
             if (!manager.isConnected() || !runBlocking { manager.healthCheck() }) error("Redis connection is unavailable")
             redis = manager
             val repository = RedisGiveawayRepository(manager, Gson(), settings.maximumParticipants)
-            service = GiveawayService(this, settings, locale, repository, InventoryJournalStore(dataFolder.toPath())).also { it.start() }
+            service = GiveawayService(this, settings, locale, repository, InventoryJournalStore(dataFolder.toPath()), itemNames).also { it.start() }
             val command = GiveawayCommand(requireNotNull(service), locale, ::reloadPlugin)
             requireNotNull(getCommand("giveaway")).apply { setExecutor(command); tabCompleter = command }
             server.pluginManager.registerEvents(GiveawayListener(requireNotNull(service)), this)
@@ -61,6 +63,7 @@ class ArcGiveawaysPlugin : JavaPlugin() {
         GiveawayLocale.validateFiles(dataFolder.toPath())
         ConfigManager.reloadAll()
         settings = GiveawayConfig.load(dataFolder.toPath())
+        itemNames.reload()
         requireNotNull(service).reload(settings)
     }
 

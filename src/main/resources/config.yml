@@ -27,4 +27,5 @@ effects:
 
 locale:
   default: ru
-  use-client-locale: true
+  # RusCrafting is a Russian-language network; keep the complete surface coherent.
+  use-client-locale: false

@@ -28,7 +28,7 @@ class GiveawayConfig(private val config: Config) {
     val particlesEnabled: Boolean get() = config.bool("effects.particles", true)
     val fireworksEnabled: Boolean get() = config.bool("effects.fireworks", true)
     val defaultLocale: String get() = config.string("locale.default", "ru").lowercase()
-    val useClientLocale: Boolean get() = config.bool("locale.use-client-locale", true)
+    val useClientLocale: Boolean get() = config.bool("locale.use-client-locale", false)
 
     fun validated(): GiveawayConfig {
         require(serverId.matches(Regex("[a-z0-9_-]{1,32}"))) { "server-id must use lowercase letters, digits, _ or -" }

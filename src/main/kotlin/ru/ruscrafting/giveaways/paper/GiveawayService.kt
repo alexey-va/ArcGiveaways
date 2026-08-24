@@ -1,7 +1,9 @@
 package ru.ruscrafting.giveaways.paper
 
 import net.kyori.adventure.bossbar.BossBar
+import net.kyori.adventure.audience.Audience
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.event.ClickCallback
 import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
 import net.kyori.adventure.title.Title
@@ -43,6 +45,7 @@ class GiveawayService(
     private val locale: GiveawayLocale,
     private val repository: RedisGiveawayRepository,
     private val journalStore: InventoryJournalStore,
+    private val itemNames: RussianItemNames,
     private val clockMs: () -> Long = System::currentTimeMillis,
 ) {
     private var engine = newEngine(settings)
@@ -56,6 +59,7 @@ class GiveawayService(
     private val winnerAnnounced = mutableSetOf<String>()
     private val countdownSecond = mutableMapOf<String, Int>()
     private val claimNoticeAt = mutableMapOf<UUID, Long>()
+    private val pvpNoticeAt = mutableMapOf<UUID, Long>()
     private val recoveryIncidents = InventoryRecoveryIncidentTracker()
     private val secureRandom = SecureRandom()
     private val channelListener = repository.registerEvents { event, _ -> refresh(event.giveawayId, event.type) }
@@ -84,6 +88,19 @@ class GiveawayService(
     }
 
     fun isInventoryLocked(playerId: UUID): Boolean = playerId in inventoryLocks
+
+    fun shouldCancelPvp(attacker: Player, victim: Player): Boolean {
+        val protected = GiveawayPvpProtection.isProtected(cache.values, settings.serverId, attacker.uniqueId) ||
+            GiveawayPvpProtection.isProtected(cache.values, settings.serverId, victim.uniqueId)
+        if (protected) {
+            val now = clockMs()
+            if (now - (pvpNoticeAt[attacker.uniqueId] ?: 0L) >= 2_000L) {
+                pvpNoticeAt[attacker.uniqueId] = now
+                attacker.sendActionBar(locale.render(MessageKey.PVP_PROTECTED, attacker))
+            }
+        }
+        return protected
+    }
 
     fun activeRecords(): List<GiveawayRecord> =
         cache.values.filter { it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING }
@@ -269,7 +286,7 @@ class GiveawayService(
                 if (record.serverId != settings.serverId) {
                     transferForJoin(player, record)
                 } else {
-                    joinLocal(player, record)
+                    teleportAndJoin(player, record)
                 }
             },
             failure = { player.sendMessage(locale.render(MessageKey.REDIS_UNAVAILABLE, player)) },
@@ -279,7 +296,7 @@ class GiveawayService(
     fun onPlayerJoin(player: Player) {
         Tasks.scheduler.runLater(40, Runnable {
             repository.consumePendingJoin(player.uniqueId.toString(), clockMs()).onMain(
-                success = { pending -> if (pending != null) join(player, pending.giveawayId) },
+                success = { pending -> if (pending != null) joinTransferred(player, pending.giveawayId) },
                 failure = { plugin.logger.warning("Could not consume pending giveaway join for ${player.uniqueId}") },
             )
             recoverFor(player)
@@ -287,6 +304,8 @@ class GiveawayService(
     }
 
     fun onPlayerQuit(player: Player) {
+        pvpNoticeAt.remove(player.uniqueId)
+        claimNoticeAt.remove(player.uniqueId)
         cache.values.filter {
             it.serverId == settings.serverId && it.hostId == player.uniqueId.toString() &&
                 (it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING)
@@ -338,7 +357,9 @@ class GiveawayService(
         }
         val remote = pending.firstOrNull { it.serverId != settings.serverId }
         if (remote != null) {
-            player.sendMessage(locale.render(MessageKey.TRANSFERRING, player, values("server", remote.serverId)))
+            player.sendMessage(locale.render(MessageKey.CLAIM_TRANSFERRING, player, values(
+                "server", locale.serverName(remote.serverId, player),
+            )))
             sendToServer(player, remote.serverId)
             return
         }
@@ -397,6 +418,57 @@ class GiveawayService(
         )
     }
 
+    private fun joinTransferred(player: Player, giveawayId: String) {
+        repository.load(giveawayId).onMain(
+            success = { record ->
+                if (record == null || record.status != GiveawayStatus.OPEN || record.serverId != settings.serverId) {
+                    player.sendMessage(locale.render(if (record == null) MessageKey.NOT_FOUND else MessageKey.NOT_OPEN, player))
+                    return@onMain
+                }
+                teleportAndJoin(player, record)
+            },
+            failure = { player.sendMessage(locale.render(MessageKey.REDIS_UNAVAILABLE, player)) },
+        )
+    }
+
+    private fun teleportAndJoin(player: Player, record: GiveawayRecord) {
+        if (record.hostId == player.uniqueId.toString()) {
+            player.sendMessage(locale.render(MessageKey.HOST_CANNOT_JOIN, player))
+            return
+        }
+        val host = runCatching { Bukkit.getPlayer(UUID.fromString(record.hostId)) }.getOrNull()
+            ?.takeIf { it.isOnline && it.world.name == record.worldName }
+        if (host == null) {
+            player.sendMessage(locale.render(MessageKey.NOT_OPEN, player))
+            return
+        }
+        player.teleportAsync(arrivalLocation(host)).onMain(
+            success = { teleported ->
+                if (teleported && player.isOnline) joinLocal(player, record)
+                else player.sendMessage(locale.render(MessageKey.TELEPORT_FAILED, player))
+            },
+            failure = {
+                plugin.logger.warning("Could not teleport ${player.uniqueId} to giveaway ${record.id}: ${it.message}")
+                player.sendMessage(locale.render(MessageKey.TELEPORT_FAILED, player))
+            },
+        )
+    }
+
+    private fun arrivalLocation(host: Player): Location {
+        val base = host.location
+        val candidates = listOf(
+            1.5 to 0.0,
+            -1.5 to 0.0,
+            0.0 to 1.5,
+            0.0 to -1.5,
+        ).map { (x, z) -> base.clone().add(x, 0.0, z) }
+        return candidates.firstOrNull { location ->
+            location.block.isPassable &&
+                location.clone().add(0.0, 1.0, 0.0).block.isPassable &&
+                location.clone().subtract(0.0, 1.0, 0.0).block.type.isSolid
+        } ?: base.clone()
+    }
+
     private fun transferForJoin(player: Player, record: GiveawayRecord) {
         if (!settings.crossServerEnabled || !settings.transferOnClick) {
             player.sendMessage(locale.render(MessageKey.NOT_OPEN, player))
@@ -405,7 +477,10 @@ class GiveawayService(
         val pending = PendingJoin(record.id, clockMs() + settings.pendingJoinSeconds * 1000L)
         repository.savePendingJoin(player.uniqueId.toString(), pending).onMain(
             success = {
-                player.sendMessage(locale.render(MessageKey.TRANSFERRING, player, values("server", record.serverId)))
+                player.sendMessage(locale.render(MessageKey.TRANSFERRING, player, values(
+                    "server", locale.serverName(record.serverId, player),
+                    "radius", record.radius.toInt(),
+                )))
                 sendToServer(player, record.serverId)
             },
             failure = { player.sendMessage(locale.render(MessageKey.REDIS_UNAVAILABLE, player)) },
@@ -646,18 +721,30 @@ class GiveawayService(
 
     private fun announce(record: GiveawayRecord) {
         Bukkit.getOnlinePlayers().forEach { player ->
-            player.sendMessage(locale.render(MessageKey.ANNOUNCEMENT_LINE, player))
             player.sendMessage(locale.render(MessageKey.ANNOUNCEMENT, player, values(
                 "host", record.hostName,
                 "item", itemComponent(record),
                 "seconds", settings.openSeconds,
             )))
             val hoverKey = if (record.serverId == settings.serverId) MessageKey.JOIN_HOVER_LOCAL else MessageKey.JOIN_HOVER_TRANSFER
+            val callback: ClickCallback<Audience> = ClickCallback.widen(
+                ClickCallback<Player> { clickingPlayer ->
+                    Tasks.scheduler.runSync(Runnable {
+                        if (clickingPlayer.isOnline) join(clickingPlayer, record.id)
+                    })
+                },
+                Player::class.java,
+            )
+            val remaining = (record.drawAtMs - clockMs()).coerceAtLeast(1_000L) + 10_000L
             val button = locale.render(MessageKey.JOIN_BUTTON, player)
-                .clickEvent(ClickEvent.runCommand("/giveaway join ${record.id}"))
-                .hoverEvent(HoverEvent.showText(locale.render(hoverKey, player, values("radius", record.radius.toInt(), "server", record.serverId))))
-            player.sendMessage(Component.text("                 ").append(button))
-            player.sendMessage(locale.render(MessageKey.ANNOUNCEMENT_LINE, player))
+                .clickEvent(ClickEvent.callback(callback) { options ->
+                    options.uses(1).lifetime(Duration.ofMillis(remaining))
+                })
+                .hoverEvent(HoverEvent.showText(locale.render(hoverKey, player, values(
+                    "radius", record.radius.toInt(),
+                    "server", locale.serverName(record.serverId, player),
+                ))))
+            player.sendMessage(button)
             play(player, "minecraft:entity.firework_rocket.launch", 0.65f, 1.1f)
         }
     }
@@ -769,7 +856,7 @@ class GiveawayService(
 
     private fun itemComponent(record: GiveawayRecord): Component {
         val item = restoreItem(record.item)
-        val base = item?.effectiveName() ?: Component.text(record.item.materialKey)
+        val base = item?.let(itemNames::displayName) ?: Component.text(record.item.materialKey)
         val withAmount = if (record.item.amount > 1) base.append(Component.text(" ×${record.item.amount}")) else base
         return if (item == null) withAmount else withAmount.hoverEvent(item.asHoverEvent())
     }

@@ -3,11 +3,15 @@ package ru.ruscrafting.giveaways.config
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.booleans.shouldBeTrue
 import io.kotest.matchers.shouldBe
+import io.mockk.every
+import io.mockk.mockk
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import org.bukkit.entity.Player
 import ru.arc.config.Config
 import ru.arc.config.ConfigManager
 import java.nio.file.Files
+import java.util.Locale
 
 class LocaleContractTest :
     StringSpec({
@@ -47,12 +51,61 @@ class LocaleContractTest :
                 ConfigManager.clear()
                 val config = GiveawayConfig.load(root)
                 val locale = GiveawayLocale(root) { config }
-                val rendered = locale.render(MessageKey.STARTED, values = mapOf("id" to Component.text("<red>unsafe</red>")))
+                val rendered = locale.render(
+                    MessageKey.ANNOUNCEMENT,
+                    values = mapOf(
+                        "host" to Component.text("<red>unsafe</red>"),
+                        "item" to Component.text("Алмаз"),
+                        "seconds" to Component.text("45"),
+                    ),
+                )
 
                 PlainTextComponentSerializer.plainText().serialize(rendered).contains("<red>unsafe</red>") shouldBe true
             } finally {
                 ConfigManager.clear()
                 root.toFile().deleteRecursively()
+            }
+        }
+
+        "an English client still receives the Russian network surface" {
+            val root = Files.createTempDirectory("arcgiveaways-forced-russian-")
+            try {
+                Files.createDirectories(root.resolve("lang"))
+                listOf("ru", "en").forEach { language ->
+                    requireNotNull(javaClass.getResourceAsStream("/lang/$language.yml")).use {
+                        Files.copy(it, root.resolve("lang/$language.yml"))
+                    }
+                }
+                Files.writeString(
+                    root.resolve("config.yml"),
+                    """
+                    server-id: spawn
+                    locale:
+                      default: ru
+                      use-client-locale: false
+                    """.trimIndent(),
+                )
+                ConfigManager.clear()
+                val config = GiveawayConfig.load(root)
+                val locale = GiveawayLocale(root) { config }
+                val player = mockk<Player>()
+                every { player.locale() } returns Locale.US
+
+                val rendered = locale.render(MessageKey.JOIN_BUTTON, player)
+
+                PlainTextComponentSerializer.plainText().serialize(rendered) shouldBe "• [Присоединиться]"
+            } finally {
+                ConfigManager.clear()
+                root.toFile().deleteRecursively()
+            }
+        }
+
+        "Russian surface has no legacy all-caps labels or raw backend names" {
+            val resource = requireNotNull(javaClass.getResourceAsStream("/lang/ru.yml"))
+            val text = resource.bufferedReader().use { it.readText() }
+
+            listOf("РАЗДАЧА", "ПОБЕДА", "GIVEAWAY", "JOIN GIVEAWAY", ">survival<").forEach { forbidden ->
+                text.contains(forbidden) shouldBe false
             }
         }
     })

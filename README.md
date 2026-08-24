@@ -8,7 +8,8 @@ radius enter the final draw snapshot.
 ## Commands
 
 - `/giveaway start [amount]` — start a giveaway with the held item.
-- `/giveaway join <id>` — join locally, or transfer to the host backend first.
+- `/giveaway join <id>` — move to the host backend when needed, teleport beside
+  the host, and join the giveaway.
 - `/giveaway status` — show active giveaways.
 - `/giveaway cancel [id]` — cancel your giveaway and queue a safe refund.
 - `/giveaway claim` — retry a pending prize or refund after freeing inventory.
@@ -20,4 +21,4 @@ radius enter the final draw snapshot.
 ../arc-core/gradlew -p . clean check shadowJar
 ```
 
-The deployable artifact is `build/libs/ArcGiveaways-0.1.3.jar`.
+The deployable artifact is `build/libs/ArcGiveaways-0.1.4.jar`.

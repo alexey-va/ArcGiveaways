@@ -18,7 +18,11 @@ class GiveawayConfigTest :
                 val profile = repositoryRoot.resolve("$runtime/plugins/ArcGiveaways/config.yml")
                 Files.readAllLines(profile).first() shouldBe "server-id: $expected"
                 ConfigManager.clear()
-                GiveawayConfig.load(profile.parent).serverId shouldBe expected
+                GiveawayConfig.load(profile.parent).also { settings ->
+                    settings.serverId shouldBe expected
+                    settings.defaultLocale shouldBe "ru"
+                    settings.useClientLocale shouldBe false
+                }
             }
             ConfigManager.clear()
         }
