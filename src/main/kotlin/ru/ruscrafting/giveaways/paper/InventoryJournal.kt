@@ -37,7 +37,7 @@ data class SlotChange(
 )
 
 data class InventoryJournalRecord(
-    val formatVersion: Int = 1,
+    val formatVersion: Int = FORMAT_VERSION,
     val giveawayId: String,
     val playerId: String,
     val kind: JournalKind,
@@ -47,7 +47,7 @@ data class InventoryJournalRecord(
     val createdAtMs: Long,
 ) {
     fun validated(): InventoryJournalRecord {
-        require(formatVersion == 1)
+        require(formatVersion == FORMAT_VERSION)
         UUID.fromString(giveawayId)
         UUID.fromString(playerId)
         require(changes.isNotEmpty() && changes.size <= 36)
@@ -59,6 +59,10 @@ data class InventoryJournalRecord(
         }
         item.decodedBytes()
         return this
+    }
+
+    companion object {
+        const val FORMAT_VERSION = 1
     }
 }
 

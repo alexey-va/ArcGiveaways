@@ -3,7 +3,7 @@ package ru.ruscrafting.giveaways.config
 import ru.arc.config.Config
 import ru.arc.config.ConfigManager
 import ru.arc.network.BackendServerId
-import ru.arc.redis.LegacyRedisSnapshot
+import ru.arc.redis.RedisConnectionSettingsSnapshot
 import ru.arc.redis.RedisConfigBootstrap
 import ru.arc.redis.RedisModuleConfig
 import java.nio.file.Files
@@ -65,7 +65,7 @@ object GiveawayRedisBootstrap {
         val redisPath = dataRoot.resolve("modules/redis.yml")
         val existed = Files.isRegularFile(redisPath)
         RedisConfigBootstrap.ensure(dataRoot) {
-            if (existed || !settings.importArcRedis) null else readArcRedis(dataRoot, settings.serverId)
+            if (existed || !settings.importArcRedis) null else readArcRedisSettings(dataRoot, settings.serverId)
         }
         val redisConfig = ConfigManager.ofModule(dataRoot, RedisModuleConfig.RESOURCE)
         var redis = RedisModuleConfig(redisConfig)
@@ -80,13 +80,13 @@ object GiveawayRedisBootstrap {
         return redis
     }
 
-    private fun readArcRedis(dataRoot: Path, serverId: String): LegacyRedisSnapshot? {
+    private fun readArcRedisSettings(dataRoot: Path, serverId: String): RedisConnectionSettingsSnapshot? {
         val pluginsRoot = dataRoot.parent ?: return null
         val arcRoot = pluginsRoot.resolve("ARC")
         val arcRedis = arcRoot.resolve("modules/redis.yml")
         if (!Files.isRegularFile(arcRedis)) return null
         val source = Config(arcRoot, "modules/redis.yml")
-        return LegacyRedisSnapshot(
+        return RedisConnectionSettingsSnapshot(
             enabled = true,
             host = source.string("host", "127.0.0.1"),
             port = source.int("port", 6379),

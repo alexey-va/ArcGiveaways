@@ -39,6 +39,7 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
 
 class GiveawayService(
@@ -56,6 +57,8 @@ class GiveawayService(
     private val inventoryLocks = ConcurrentHashMap.newKeySet<UUID>()
     private val cooldowns = ConcurrentHashMap<UUID, Long>()
     private val journals = ConcurrentHashMap<String, InventoryJournalRecord>()
+    private val cacheMutationLock = Any()
+    private val activeLeaseGauge = ActiveLeaseGauge()
     private val bossBars = mutableMapOf<String, BossBar>()
     private val bossViewers = mutableMapOf<String, MutableSet<UUID>>()
     private val announced = mutableSetOf<String>()
@@ -115,6 +118,12 @@ class GiveawayService(
     fun activeRecords(): List<GiveawayRecord> =
         cache.values.filter { it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING }
             .sortedBy { it.drawAtMs }
+
+    /** Constant-time in-memory gauge safe for runtime health sampling. */
+    fun recoveryBacklog(): Int = journals.size
+
+    /** Constant-time count of locally observed active host claims. */
+    fun activeLeaseCount(): Int = activeLeaseGauge.count()
 
     fun qaReport(idOrPrefix: String?): List<String> {
         val allIds = (cache.keys + journals.values.map { it.giveawayId }).distinct().sorted()
@@ -723,7 +732,11 @@ class GiveawayService(
     }
 
     private fun acceptRecord(record: GiveawayRecord) {
-        val previous = cache.put(record.id, record)
+        val previous = synchronized(cacheMutationLock) {
+            val previous = cache.put(record.id, record)
+            activeLeaseGauge.transition(previous?.isActive() == true, record.isActive())
+            previous
+        }
         if (record.status == GiveawayStatus.OPEN && record.id !in announced) {
             announced += record.id
             announce(record)
@@ -792,7 +805,12 @@ class GiveawayService(
 
     private fun refresh(id: String, type: GiveawayEventType) {
         if (type == GiveawayEventType.DELETED) {
-            Tasks.scheduler.runSync(Runnable { cache.remove(id); removeBossBar(id) })
+            Tasks.scheduler.runSync(
+                Runnable {
+                    removeCachedRecord(id)
+                    removeBossBar(id)
+                },
+            )
             return
         }
         repository.load(id).onMain(
@@ -806,7 +824,7 @@ class GiveawayService(
             success = { records ->
                 val ids = records.map { it.id }.toSet()
                 records.forEach(::acceptRecord)
-                cache.keys.filter { it !in ids }.forEach { cache.remove(it); removeBossBar(it) }
+                cache.keys.filter { it !in ids }.forEach { removeCachedRecord(it); removeBossBar(it) }
             },
             failure = { plugin.logger.warning("Giveaway Redis reconciliation failed: ${it.message}") },
         )
@@ -815,7 +833,11 @@ class GiveawayService(
     private fun cleanupTerminal(now: Long) {
         val retention = settings.terminalRetentionMinutes * 60_000L
         cache.values.filter { !it.isActive() && it.terminalAtMs != null && now - it.terminalAtMs > retention }.forEach { record ->
-            repository.delete(record).thenAccept { deleted -> if (deleted) cache.remove(record.id) }
+            repository.delete(record).thenAccept { deleted ->
+                if (deleted) {
+                    removeCachedRecord(record.id)
+                }
+            }
         }
     }
 
@@ -837,6 +859,12 @@ class GiveawayService(
         val normalized = value.lowercase()
         return cache.keys.filter { it == normalized || it.startsWith(normalized) }.singleOrNull()
             ?: runCatching { UUID.fromString(value).toString() }.getOrNull()
+    }
+
+    private fun removeCachedRecord(id: String): GiveawayRecord? = synchronized(cacheMutationLock) {
+        cache.remove(id).also { removed ->
+            activeLeaseGauge.transition(removed?.isActive() == true, currentActive = false)
+        }
     }
 
     private fun hostLocation(record: GiveawayRecord): Location {
@@ -948,4 +976,21 @@ class GiveawayService(
             })
         }
     }
+}
+
+/** Thread-safe transition gauge that cannot underflow on first observation of an inactive record. */
+internal class ActiveLeaseGauge {
+    private val value = AtomicInteger()
+
+    fun transition(
+        previousActive: Boolean,
+        currentActive: Boolean,
+    ) {
+        when {
+            !previousActive && currentActive -> value.incrementAndGet()
+            previousActive && !currentActive -> value.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
+        }
+    }
+
+    fun count(): Int = value.get()
 }

@@ -9,6 +9,8 @@ import ru.arc.core.PaperArcRuntime
 import ru.arc.core.Tasks
 import ru.arc.paper.network.BungeeBackendTransfer
 import ru.arc.paper.runtime.PaperPluginRuntime
+import ru.arc.observability.RuntimeHealthContribution
+import ru.arc.observability.RuntimeHealthState
 import ru.arc.redis.RedisManager
 import ru.arc.redis.ServerIdentity
 import ru.ruscrafting.giveaways.config.GiveawayConfig
@@ -48,7 +50,7 @@ class ArcGiveawaysPlugin : JavaPlugin() {
             val backendTransfer = BungeeBackendTransfer(this) { failure ->
                 logger.log(java.util.logging.Level.WARNING, "ArcGiveaways backend transfer send failed", failure)
             }.also { transfer = it; lifecycle.own(it) }
-            service = GiveawayService(
+            val activeService = GiveawayService(
                 this,
                 settings,
                 locale,
@@ -57,13 +59,26 @@ class ArcGiveawaysPlugin : JavaPlugin() {
                 itemNames,
                 backendTransfer,
             ).also { lifecycle.own(it); it.start() }
-            val command = GiveawayCommand(requireNotNull(service), locale, ::reloadPlugin)
+            service = activeService
+            lifecycle.registerHealth("runtime") {
+                val redisReady = manager.isConnected()
+                RuntimeHealthContribution(
+                    state = if (redisReady) RuntimeHealthState.UP else RuntimeHealthState.DEGRADED,
+                    recoveryBacklog = activeService.recoveryBacklog(),
+                    activeLeases = activeService.activeLeaseCount(),
+                    schemas = mapOf("inventory_journal" to InventoryJournalRecord.FORMAT_VERSION),
+                    dependencies = mapOf("redis" to redisReady),
+                )
+            }
+            val command = GiveawayCommand(activeService, locale, ::reloadPlugin)
             requireNotNull(getCommand("giveaway")).apply { setExecutor(command); tabCompleter = command }
             server.pluginManager.registerEvents(GiveawayListener(requireNotNull(service)), this)
             manager.init()
             lifecycle.ready("server" to settings.serverId, "redis" to manager.isConnected())
+            lifecycle.reportHealthEvery(HEALTH_REPORT_TICKS)
             logger.info("ArcGiveaways enabled on ${settings.serverId}; Redis coordination is required")
         } catch (failure: Throwable) {
+            runCatching { lifecycle.health.markDown(); lifecycle.emitHealth() }
             logger.log(java.util.logging.Level.SEVERE, "ArcGiveaways failed closed during startup", failure)
             server.pluginManager.disablePlugin(this)
         }
@@ -89,5 +104,9 @@ class ArcGiveawaysPlugin : JavaPlugin() {
     private fun saveResourceIfMissing(path: String) {
         val target = dataFolder.toPath().resolve(path)
         if (!java.nio.file.Files.isRegularFile(target)) saveResource(path, false)
+    }
+
+    private companion object {
+        const val HEALTH_REPORT_TICKS = 1_200L
     }
 }
