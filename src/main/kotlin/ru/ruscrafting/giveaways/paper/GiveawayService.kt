@@ -19,6 +19,9 @@ import ru.arc.core.Tasks
 import ru.arc.network.BackendServerId
 import ru.arc.paper.network.BackendTransfer
 import ru.arc.paper.network.BackendTransferResult
+import ru.arc.persistence.DurableAcknowledgementOutcome
+import ru.arc.persistence.DurableRecoveryCompletion
+import ru.arc.persistence.DurableRecoveryWorkflow
 import ru.ruscrafting.giveaways.config.GiveawayConfig
 import ru.ruscrafting.giveaways.config.GiveawayLocale
 import ru.ruscrafting.giveaways.config.MessageKey
@@ -47,7 +50,7 @@ class GiveawayService(
     private val itemNames: RussianItemNames,
     private val transfer: BackendTransfer,
     private val clockMs: () -> Long = System::currentTimeMillis,
-) {
+) : AutoCloseable {
     private var engine = newEngine(settings)
     private val cache = ConcurrentHashMap<String, GiveawayRecord>()
     private val inventoryLocks = ConcurrentHashMap.newKeySet<UUID>()
@@ -67,6 +70,11 @@ class GiveawayService(
     ) { event, _ -> refresh(event.giveawayId, event.type) }
     private var tickTask: ScheduledTask? = null
     private var reconcileTask: ScheduledTask? = null
+    private val inventoryRecovery = DurableRecoveryWorkflow<InventoryJournalRecord, InventoryJournalRecord>(
+        commit = { candidate -> completed { journalStore.write(candidate) } },
+        sameContent = { candidate, committed -> candidate == committed },
+        acknowledge = { committed, _ -> completed { journalStore.acknowledgeExactly(committed) } },
+    )
 
     fun start() {
         journalStore.loadAll().forEach { journals[journalKey(it.giveawayId, it.kind)] = it }
@@ -80,7 +88,7 @@ class GiveawayService(
         engine = newEngine(settings)
     }
 
-    fun close() {
+    override fun close() {
         tickTask?.cancel()
         reconcileTask?.cancel()
         eventBus.close()
@@ -572,9 +580,9 @@ class GiveawayService(
         when (plan.state(player)) {
             PlanState.BEFORE -> {
                 recoveryIncidents.clear(key)
-                if (!plan.apply(player)) return
-                journal = journal.copy(status = JournalStatus.APPLIED)
-                journalStore.write(journal)
+                journal = runCatching { persistThenApply(journal, plan, player) }
+                    .onFailure { plugin.logger.severe("Could not converge $kind journal for ${record.id}: ${it.message}") }
+                    .getOrNull() ?: return
                 journals[key] = journal
             }
             PlanState.AFTER -> {
@@ -592,10 +600,15 @@ class GiveawayService(
                 return
             }
         }
-        finalizeDelivery(record, player, kind)
+        finalizeDelivery(record, player, kind, journal)
     }
 
-    private fun finalizeDelivery(record: GiveawayRecord, player: Player, kind: JournalKind) {
+    private fun finalizeDelivery(
+        record: GiveawayRecord,
+        player: Player,
+        kind: JournalKind,
+        appliedJournal: InventoryJournalRecord,
+    ) {
         repository.update(record.id) { current ->
             when {
                 kind == JournalKind.PRIZE && current.status == GiveawayStatus.AWAITING_DELIVERY -> engine.complete(current, clockMs())
@@ -606,11 +619,13 @@ class GiveawayService(
             success = { result ->
                 val terminal = (result as? RepositoryUpdate.Changed)?.after ?: return@onMain
                 acceptRecord(terminal)
-                journalStore.delete(record.id, kind)
+                if (!retireJournal(appliedJournal)) return@onMain
                 journals.remove(journalKey(record.id, kind))
                 recoveryIncidents.clear(journalKey(record.id, kind))
-                journalStore.delete(record.id, JournalKind.ESCROW)
-                journals.remove(journalKey(record.id, JournalKind.ESCROW))
+                val escrowKey = journalKey(record.id, JournalKind.ESCROW)
+                journals[escrowKey]?.let { escrowJournal ->
+                    if (retireJournal(escrowJournal)) journals.remove(escrowKey)
+                }
                 repository.releaseHost(record.hostId, record.id)
                 if (kind == JournalKind.PRIZE) {
                     player.sendMessage(locale.render(MessageKey.DELIVERED, player))
@@ -629,11 +644,10 @@ class GiveawayService(
         when (plan.state(host)) {
             PlanState.BEFORE -> {
                 recoveryIncidents.clear(key)
-                if (plan.apply(host)) {
-                    val applied = journal.copy(status = JournalStatus.APPLIED)
-                    journalStore.write(applied)
-                    journals[key] = applied
-                } else return
+                val applied = runCatching { persistThenApply(journal, plan, host) }
+                    .onFailure { plugin.logger.severe("Could not converge escrow journal for ${record.id}: ${it.message}") }
+                    .getOrNull() ?: return
+                journals[key] = applied
             }
             PlanState.AFTER -> recoveryIncidents.clear(key)
             PlanState.AMBIGUOUS -> {
@@ -808,8 +822,13 @@ class GiveawayService(
     private fun cleanupFailedStart(record: GiveawayRecord, player: Player, itemWasRemoved: Boolean) {
         inventoryLocks.remove(player.uniqueId)
         if (!itemWasRemoved) {
-            runCatching { journalStore.delete(record.id, JournalKind.ESCROW) }
-            journals.remove(journalKey(record.id, JournalKind.ESCROW))
+            val key = journalKey(record.id, JournalKind.ESCROW)
+            journals[key]?.let { journal ->
+                runCatching { journalStore.acknowledgeExactly(journal) }
+                    .onSuccess { outcome ->
+                        if (outcome != DurableAcknowledgementOutcome.CONTENT_MISMATCH) journals.remove(key)
+                    }
+            }
         }
         repository.releaseHost(record.hostId, record.id)
     }
@@ -885,6 +904,35 @@ class GiveawayService(
     }
 
     private fun journalKey(id: String, kind: JournalKind): String = "$id:${kind.name}"
+
+    private fun persistThenApply(
+        journal: InventoryJournalRecord,
+        plan: InventoryPlan,
+        player: Player,
+    ): InventoryJournalRecord = inventoryRecovery.commitThenMutate(journal) { committed ->
+        completed {
+            check(plan.state(player) == PlanState.BEFORE) { "Inventory changed before committed journal mutation" }
+            check(plan.apply(player)) { "Committed inventory journal mutation did not verify" }
+            journalStore.write(committed.copy(status = JournalStatus.APPLIED))
+        }
+    }.join().mutation
+
+    private fun retireJournal(journal: InventoryJournalRecord): Boolean {
+        val completion = inventoryRecovery.restoreThenAcknowledge(journal) { committed ->
+            completed {
+                check(committed.status == JournalStatus.APPLIED) { "Only an applied inventory journal may be retired" }
+                committed
+            }
+        }.join()
+        if (completion is DurableRecoveryCompletion.ContentMismatch) {
+            plugin.logger.severe("Inventory journal ${journal.giveawayId}:${journal.kind} changed before acknowledgement")
+            return false
+        }
+        return true
+    }
+
+    private fun <T : Any> completed(operation: () -> T): CompletableFuture<T> =
+        runCatching(operation).fold(CompletableFuture<T>::completedFuture, CompletableFuture<T>::failedFuture)
 
     private fun newEngine(config: GiveawayConfig): GiveawayEngine =
         GiveawayEngine(config.maximumParticipants, config.minimumParticipants) { bound -> secureRandom.nextInt(bound) }

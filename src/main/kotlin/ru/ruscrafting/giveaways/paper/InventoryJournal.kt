@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import ru.arc.persistence.DurableRecordJournal
+import ru.arc.persistence.DurableAcknowledgementOutcome
 import ru.ruscrafting.giveaways.domain.ItemPayload
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
@@ -171,14 +172,15 @@ class InventoryJournalStore(
         validate = InventoryJournalRecord::validated,
     )
 
-    fun write(record: InventoryJournalRecord) {
+    fun write(record: InventoryJournalRecord): InventoryJournalRecord {
         val validated = record.validated()
-        journal.commit(recordId(validated.giveawayId, validated.kind), validated)
+        return journal.commit(recordId(validated.giveawayId, validated.kind), validated)
     }
 
-    fun delete(giveawayId: String, kind: JournalKind) {
-        journal.acknowledge(recordId(giveawayId, kind))
-    }
+    fun acknowledgeExactly(record: InventoryJournalRecord): DurableAcknowledgementOutcome =
+        journal.acknowledgeExactly(recordId(record.giveawayId, record.kind), record.validated()) { expected, current ->
+            expected == current
+        }
 
     fun loadAll(): List<InventoryJournalRecord> = journal.loadAll().map { stored ->
         stored.value.also { record ->

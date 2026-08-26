@@ -8,6 +8,7 @@ import ru.arc.config.ConfigManager
 import ru.arc.core.PaperArcRuntime
 import ru.arc.core.Tasks
 import ru.arc.paper.network.BungeeBackendTransfer
+import ru.arc.paper.runtime.PaperPluginRuntime
 import ru.arc.redis.RedisManager
 import ru.arc.redis.ServerIdentity
 import ru.ruscrafting.giveaways.config.GiveawayConfig
@@ -22,12 +23,17 @@ class ArcGiveawaysPlugin : JavaPlugin() {
     private lateinit var settings: GiveawayConfig
     private lateinit var locale: GiveawayLocale
     private lateinit var itemNames: RussianItemNames
+    private var pluginRuntime: PaperPluginRuntime? = null
 
     override fun onEnable() {
         saveDefaultConfig()
         saveResourceIfMissing("lang/ru.yml")
         saveResourceIfMissing("lang/en.yml")
         PaperArcRuntime.installScheduling(this)
+        val lifecycle = PaperPluginRuntime(this, "arc-giveaways").also {
+            pluginRuntime = it
+            it.start("version" to pluginMeta.version)
+        }
 
         try {
             settings = GiveawayConfig.load(dataFolder.toPath())
@@ -35,12 +41,13 @@ class ArcGiveawaysPlugin : JavaPlugin() {
             locale = GiveawayLocale(dataFolder.toPath()) { settings }
             itemNames = RussianItemNames(dataFolder.toPath().resolveSibling("ARC").resolve("lang.json"), logger)
             val manager = RedisManager(redisConfig.connection(), ServerIdentity { settings.serverId }, LoggerFactory.getLogger("ArcGiveaways.Redis"))
+            lifecycle.own(manager)
             if (!manager.isConnected() || !runBlocking { manager.healthCheck() }) error("Redis connection is unavailable")
             redis = manager
             val repository = RedisGiveawayRepository(manager, Gson(), settings.maximumParticipants)
             val backendTransfer = BungeeBackendTransfer(this) { failure ->
                 logger.log(java.util.logging.Level.WARNING, "ArcGiveaways backend transfer send failed", failure)
-            }.also { transfer = it }
+            }.also { transfer = it; lifecycle.own(it) }
             service = GiveawayService(
                 this,
                 settings,
@@ -49,11 +56,12 @@ class ArcGiveawaysPlugin : JavaPlugin() {
                 InventoryJournalStore(dataFolder.toPath()),
                 itemNames,
                 backendTransfer,
-            ).also { it.start() }
+            ).also { lifecycle.own(it); it.start() }
             val command = GiveawayCommand(requireNotNull(service), locale, ::reloadPlugin)
             requireNotNull(getCommand("giveaway")).apply { setExecutor(command); tabCompleter = command }
             server.pluginManager.registerEvents(GiveawayListener(requireNotNull(service)), this)
             manager.init()
+            lifecycle.ready("server" to settings.serverId, "redis" to manager.isConnected())
             logger.info("ArcGiveaways enabled on ${settings.serverId}; Redis coordination is required")
         } catch (failure: Throwable) {
             logger.log(java.util.logging.Level.SEVERE, "ArcGiveaways failed closed during startup", failure)
@@ -62,9 +70,8 @@ class ArcGiveawaysPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
-        runCatching { service?.close() }
-        runCatching { transfer?.close() }
-        runCatching { redis?.close() }
+        runCatching { pluginRuntime?.close() }
+        pluginRuntime = null
         Tasks.reset()
     }
 
