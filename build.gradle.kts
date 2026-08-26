@@ -16,6 +16,7 @@ val integrationTestSourceSet = sourceSets.create("integrationTest") {
 
 repositories {
     mavenCentral()
+    maven("https://repo.rus-crafting.ru/grocermc/") { content { includeGroup("ru.ruscrafting.arc") } }
     maven("https://repo.papermc.io/repository/maven-public/")
 }
 
@@ -24,9 +25,9 @@ kotlin { jvmToolchain(25) }
 
 dependencies {
     implementation(kotlin("stdlib"))
-    implementation("ru.arc:arc-core:1.0-SNAPSHOT")
-    implementation("ru.arc:arc-core-paper:1.0-SNAPSHOT")
-    implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
+    implementation("ru.ruscrafting.arc:arc-core:2.0.0")
+    implementation("ru.ruscrafting.arc:arc-core-paper:2.0.0")
+    implementation("ru.ruscrafting.arc:arc-core-redis:2.0.0")
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
@@ -34,10 +35,10 @@ dependencies {
     testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
     testImplementation("io.kotest:kotest-assertions-core:6.0.7")
     testImplementation("io.mockk:mockk:1.14.7")
-    testImplementation("ru.arc:arc-core-paper-testing:1.0-SNAPSHOT")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:2.0.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     "integrationTestImplementation"(sourceSets.test.get().output)
-    "integrationTestImplementation"("ru.arc:arc-core-integration-testing:1.0-SNAPSHOT")
+    "integrationTestImplementation"("ru.ruscrafting.arc:arc-core-integration-testing:2.0.0")
     configurations["integrationTestImplementation"].extendsFrom(configurations["testImplementation"])
     configurations["integrationTestRuntimeOnly"].extendsFrom(configurations["testRuntimeOnly"])
 }

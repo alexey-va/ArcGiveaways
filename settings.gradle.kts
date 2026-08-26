@@ -1,9 +1,20 @@
 rootProject.name = "ArcGiveaways"
 
-val arcCoreDir = sequenceOf(
-    file("../arc-core"),
-    file("../../IdeaProjects/arc-core"),
-).firstOrNull { it.resolve("settings.gradle.kts").isFile }
-    ?: error("arc-core must be checked out next to ArcGiveaways")
-
-includeBuild(arcCoreDir)
+providers.gradleProperty("arcCoreDir").orNull?.let(::file)?.let { arcCoreDir ->
+    require(arcCoreDir.resolve("settings.gradle.kts").isFile) {
+        "arcCoreDir must point to an arc-core checkout"
+    }
+    includeBuild(arcCoreDir) {
+        dependencySubstitution {
+            listOf(
+                "arc-core",
+                "arc-core-integration-testing",
+                "arc-core-paper",
+                "arc-core-paper-testing",
+                "arc-core-redis",
+            ).forEach { artifact ->
+                substitute(module("ru.ruscrafting.arc:$artifact")).using(project(":$artifact"))
+            }
+        }
+    }
+}
