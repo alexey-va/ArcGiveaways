@@ -34,7 +34,7 @@ dependencies {
     testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
     testImplementation("io.kotest:kotest-assertions-core:6.0.7")
     testImplementation("io.mockk:mockk:1.14.7")
-    testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
+    testImplementation("ru.arc:arc-core-paper-testing:1.0-SNAPSHOT")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     "integrationTestImplementation"(sourceSets.test.get().output)
     configurations["integrationTestImplementation"].extendsFrom(configurations["testImplementation"])

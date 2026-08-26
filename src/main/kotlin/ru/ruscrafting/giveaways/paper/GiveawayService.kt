@@ -16,6 +16,9 @@ import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
 import ru.arc.core.ScheduledTask
 import ru.arc.core.Tasks
+import ru.arc.network.BackendServerId
+import ru.arc.paper.network.BackendTransfer
+import ru.arc.paper.network.BackendTransferResult
 import ru.ruscrafting.giveaways.config.GiveawayConfig
 import ru.ruscrafting.giveaways.config.GiveawayLocale
 import ru.ruscrafting.giveaways.config.MessageKey
@@ -28,8 +31,6 @@ import ru.ruscrafting.giveaways.network.GiveawayEventType
 import ru.ruscrafting.giveaways.network.PendingJoin
 import ru.ruscrafting.giveaways.network.RedisGiveawayRepository
 import ru.ruscrafting.giveaways.network.RepositoryUpdate
-import java.io.ByteArrayOutputStream
-import java.io.DataOutputStream
 import java.security.SecureRandom
 import java.time.Duration
 import java.util.UUID
@@ -44,6 +45,7 @@ class GiveawayService(
     private val repository: RedisGiveawayRepository,
     private val journalStore: InventoryJournalStore,
     private val itemNames: RussianItemNames,
+    private val transfer: BackendTransfer,
     private val clockMs: () -> Long = System::currentTimeMillis,
 ) {
     private var engine = newEngine(settings)
@@ -60,7 +62,9 @@ class GiveawayService(
     private val pvpNoticeAt = mutableMapOf<UUID, Long>()
     private val recoveryIncidents = InventoryRecoveryIncidentTracker()
     private val secureRandom = SecureRandom()
-    private val channelListener = repository.registerEvents { event, _ -> refresh(event.giveawayId, event.type) }
+    private val eventBus = repository.registerEvents(
+        originAllowed = { origin -> origin != settings.serverId && origin in settings.allowedOrigins },
+    ) { event, _ -> refresh(event.giveawayId, event.type) }
     private var tickTask: ScheduledTask? = null
     private var reconcileTask: ScheduledTask? = null
 
@@ -79,7 +83,7 @@ class GiveawayService(
     fun close() {
         tickTask?.cancel()
         reconcileTask?.cancel()
-        repository.unregisterEvents(channelListener)
+        eventBus.close()
         bossBars.keys.toList().forEach(::removeBossBar)
         inventoryLocks.clear()
         recoveryIncidents.clearAll()
@@ -867,9 +871,9 @@ class GiveawayService(
     }
 
     private fun sendToServer(player: Player, serverId: String) {
-        val bytes = ByteArrayOutputStream()
-        DataOutputStream(bytes).use { out -> out.writeUTF("Connect"); out.writeUTF(serverId) }
-        player.sendPluginMessage(plugin, "BungeeCord", bytes.toByteArray())
+        if (transfer.connect(player, BackendServerId.of(serverId)) != BackendTransferResult.SENT) {
+            player.sendMessage(locale.render(MessageKey.TELEPORT_FAILED, player))
+        }
     }
 
     private fun values(vararg entries: Any?): Map<String, Component> {

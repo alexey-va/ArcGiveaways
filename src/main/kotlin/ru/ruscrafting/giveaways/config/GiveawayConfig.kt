@@ -2,6 +2,7 @@ package ru.ruscrafting.giveaways.config
 
 import ru.arc.config.Config
 import ru.arc.config.ConfigManager
+import ru.arc.network.BackendServerId
 import ru.arc.redis.LegacyRedisSnapshot
 import ru.arc.redis.RedisConfigBootstrap
 import ru.arc.redis.RedisModuleConfig
@@ -21,6 +22,10 @@ class GiveawayConfig(private val config: Config) {
     val crossServerEnabled: Boolean get() = config.bool("cross-server.enabled", true)
     val transferOnClick: Boolean get() = config.bool("cross-server.transfer-on-click", true)
     val pendingJoinSeconds: Int get() = config.int("cross-server.pending-join-seconds", 45)
+    val allowedOrigins: Set<String> get() = config.stringList(
+        "cross-server.allowed-origins",
+        listOf("spawn", "survival", "parkour"),
+    ).map { BackendServerId.of(it.trim().lowercase()).value }.toSet()
     val importArcRedis: Boolean get() = config.bool("redis.import-arc-credentials", true)
     val bossBarEnabled: Boolean get() = config.bool("effects.bossbar", true)
     val titlesEnabled: Boolean get() = config.bool("effects.titles", true)
@@ -31,7 +36,7 @@ class GiveawayConfig(private val config: Config) {
     val useClientLocale: Boolean get() = config.bool("locale.use-client-locale", false)
 
     fun validated(): GiveawayConfig {
-        require(serverId.matches(Regex("[a-z0-9_-]{1,32}"))) { "server-id must use lowercase letters, digits, _ or -" }
+        BackendServerId.of(serverId)
         require(radius in 1.0..1000.0) { "giveaway.radius-blocks must be between 1 and 1000" }
         require(openSeconds in 10..3600) { "giveaway.open-seconds must be between 10 and 3600" }
         require(drawingSeconds in 1..30) { "giveaway.drawing-seconds must be between 1 and 30" }
@@ -41,6 +46,9 @@ class GiveawayConfig(private val config: Config) {
         require(hostCooldownSeconds in 0..86_400) { "host-cooldown-seconds is outside the supported range" }
         require(terminalRetentionMinutes in 5..1440) { "terminal-retention-minutes must be between 5 and 1440" }
         require(pendingJoinSeconds in 5..300) { "pending-join-seconds must be between 5 and 300" }
+        require(allowedOrigins.isNotEmpty() && serverId in allowedOrigins) {
+            "cross-server.allowed-origins must include this server-id"
+        }
         require(defaultLocale in setOf("ru", "en")) { "locale.default must be ru or en" }
         return this
     }

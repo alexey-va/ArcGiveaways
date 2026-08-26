@@ -6,9 +6,11 @@ import io.kotest.matchers.booleans.shouldBeTrue
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.shouldBe
 import ru.arc.redis.InMemoryRedis
+import ru.arc.redis.ServerIdentity
 import ru.ruscrafting.giveaways.domain.GiveawayStatus
 import ru.ruscrafting.giveaways.giveaway
 import ru.ruscrafting.giveaways.participant
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
 
 class RedisGiveawayRepositoryTest :
@@ -16,11 +18,14 @@ class RedisGiveawayRepositoryTest :
         "only one backend can claim a host" {
             val redis = InMemoryRedis()
             val repository = RedisGiveawayRepository(redis)
+            val host = UUID(0, 1).toString()
+            val first = UUID(0, 2).toString()
+            val second = UUID(0, 3).toString()
 
-            repository.claimHost("host", "one").join().shouldBeTrue()
-            repository.claimHost("host", "two").join().shouldBeFalse()
-            repository.releaseHost("host", "two").join().shouldBeFalse()
-            repository.releaseHost("host", "one").join().shouldBeTrue()
+            repository.claimHost(host, first).join().shouldBeTrue()
+            repository.claimHost(host, second).join().shouldBeFalse()
+            repository.releaseHost(host, second).join().shouldBeFalse()
+            repository.releaseHost(host, first).join().shouldBeTrue()
         }
 
         "concurrent duplicate joins produce one participant" {
@@ -48,7 +53,7 @@ class RedisGiveawayRepositoryTest :
             val redis = InMemoryRedis()
             val repository = RedisGiveawayRepository(redis)
             val events = mutableListOf<GiveawayEventType>()
-            repository.registerEvents { event, _ -> events += event.type }
+            val bus = repository.registerEvents(originAllowed = { true }) { event, _ -> events += event.type }
             val initial = giveaway()
 
             repository.create(initial).join().shouldBeTrue()
@@ -63,5 +68,24 @@ class RedisGiveawayRepositoryTest :
                 GiveawayEventType.TERMINAL,
                 GiveawayEventType.DELETED,
             )
+            bus.close()
+        }
+
+        "event boundary rejects untrusted origins, malformed payloads, and replay" {
+            val redis = InMemoryRedis(ServerIdentity { "spawn" })
+            val repository = RedisGiveawayRepository(redis)
+            val received = mutableListOf<GiveawayWireEvent>()
+            val bus = repository.registerEvents(originAllowed = { it == "survival" }) { event, _ -> received += event }
+
+            repository.create(giveaway()).join().shouldBeTrue()
+            val raw = redis.getPublishedMessages().single().message
+            redis.simulateExternalMessage(RedisGiveawayRepository.EVENT_CHANNEL, raw, "evil")
+            redis.simulateExternalMessage(RedisGiveawayRepository.EVENT_CHANNEL, "{not-json", "survival")
+            redis.simulateExternalMessage(RedisGiveawayRepository.EVENT_CHANNEL, raw, "survival")
+            redis.simulateExternalMessage(RedisGiveawayRepository.EVENT_CHANNEL, raw, "survival")
+
+            received.size shouldBe 1
+            received.single().type shouldBe GiveawayEventType.CREATED
+            bus.close()
         }
     })

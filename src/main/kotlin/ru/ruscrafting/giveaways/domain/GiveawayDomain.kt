@@ -1,5 +1,7 @@
 package ru.ruscrafting.giveaways.domain
 
+import ru.arc.network.BackendServerId
+import ru.arc.network.NetworkPlayerName
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
@@ -53,8 +55,8 @@ data class GiveawayParticipant(
     val joinedAtMs: Long,
 ) {
     fun validated(): GiveawayParticipant {
-        UUID.fromString(playerId)
-        require(playerName.length in 1..32) { "Invalid participant name" }
+        require(UUID.fromString(playerId).toString() == playerId) { "Invalid participant id" }
+        NetworkPlayerName.of(playerName)
         require(joinedAtMs > 0) { "Invalid participant timestamp" }
         return this
     }
@@ -86,11 +88,11 @@ data class GiveawayRecord(
 ) {
     fun validated(maxParticipants: Int = MAX_PARTICIPANTS): GiveawayRecord {
         require(protocolVersion == PROTOCOL_VERSION) { "Unsupported giveaway protocol" }
-        UUID.fromString(id)
-        UUID.fromString(hostId)
+        require(UUID.fromString(id).toString() == id) { "Invalid giveaway id" }
+        require(UUID.fromString(hostId).toString() == hostId) { "Invalid host id" }
         require(revision >= 0) { "Invalid revision" }
-        require(hostName.length in 1..32) { "Invalid host name" }
-        require(serverId.matches(IDENTIFIER)) { "Invalid server id" }
+        NetworkPlayerName.of(hostName)
+        BackendServerId.of(serverId)
         require(worldName.length in 1..128) { "Invalid world name" }
         require(listOf(anchorX, anchorY, anchorZ, radius).all(Double::isFinite)) { "Invalid giveaway location" }
         require(radius in 1.0..1000.0) { "Invalid giveaway radius" }
@@ -123,7 +125,6 @@ data class GiveawayRecord(
     companion object {
         const val PROTOCOL_VERSION = 1
         const val MAX_PARTICIPANTS = 250
-        private val IDENTIFIER = Regex("[a-z0-9_-]{1,32}")
         private val ACTIVE_STATUSES = setOf(
             GiveawayStatus.PREPARING,
             GiveawayStatus.OPEN,

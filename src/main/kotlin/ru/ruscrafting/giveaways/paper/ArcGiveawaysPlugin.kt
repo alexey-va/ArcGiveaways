@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory
 import ru.arc.config.ConfigManager
 import ru.arc.core.PaperArcRuntime
 import ru.arc.core.Tasks
+import ru.arc.paper.network.BungeeBackendTransfer
 import ru.arc.redis.RedisManager
 import ru.arc.redis.ServerIdentity
 import ru.ruscrafting.giveaways.config.GiveawayConfig
@@ -17,6 +18,7 @@ import ru.ruscrafting.giveaways.network.RedisGiveawayRepository
 class ArcGiveawaysPlugin : JavaPlugin() {
     private var redis: RedisManager? = null
     private var service: GiveawayService? = null
+    private var transfer: BungeeBackendTransfer? = null
     private lateinit var settings: GiveawayConfig
     private lateinit var locale: GiveawayLocale
     private lateinit var itemNames: RussianItemNames
@@ -36,11 +38,21 @@ class ArcGiveawaysPlugin : JavaPlugin() {
             if (!manager.isConnected() || !runBlocking { manager.healthCheck() }) error("Redis connection is unavailable")
             redis = manager
             val repository = RedisGiveawayRepository(manager, Gson(), settings.maximumParticipants)
-            service = GiveawayService(this, settings, locale, repository, InventoryJournalStore(dataFolder.toPath()), itemNames).also { it.start() }
+            val backendTransfer = BungeeBackendTransfer(this) { failure ->
+                logger.log(java.util.logging.Level.WARNING, "ArcGiveaways backend transfer send failed", failure)
+            }.also { transfer = it }
+            service = GiveawayService(
+                this,
+                settings,
+                locale,
+                repository,
+                InventoryJournalStore(dataFolder.toPath()),
+                itemNames,
+                backendTransfer,
+            ).also { it.start() }
             val command = GiveawayCommand(requireNotNull(service), locale, ::reloadPlugin)
             requireNotNull(getCommand("giveaway")).apply { setExecutor(command); tabCompleter = command }
             server.pluginManager.registerEvents(GiveawayListener(requireNotNull(service)), this)
-            server.messenger.registerOutgoingPluginChannel(this, "BungeeCord")
             manager.init()
             logger.info("ArcGiveaways enabled on ${settings.serverId}; Redis coordination is required")
         } catch (failure: Throwable) {
@@ -51,7 +63,7 @@ class ArcGiveawaysPlugin : JavaPlugin() {
 
     override fun onDisable() {
         runCatching { service?.close() }
-        runCatching { server.messenger.unregisterOutgoingPluginChannel(this, "BungeeCord") }
+        runCatching { transfer?.close() }
         runCatching { redis?.close() }
         Tasks.reset()
     }

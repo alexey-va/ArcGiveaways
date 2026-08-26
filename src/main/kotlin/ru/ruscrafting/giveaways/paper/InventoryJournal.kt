@@ -3,13 +3,10 @@ package ru.ruscrafting.giveaways.paper
 import com.google.gson.Gson
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
+import ru.arc.persistence.DurableRecordJournal
 import ru.ruscrafting.giveaways.domain.ItemPayload
-import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -161,49 +158,42 @@ class InventoryJournalStore(
     dataRoot: Path,
     private val gson: Gson = Gson(),
 ) {
-    private val directory = dataRoot.resolve("data/inventory-journals")
-
-    init {
-        Files.createDirectories(directory)
-    }
+    private val journal = DurableRecordJournal(
+        root = dataRoot,
+        relativeDirectory = Path.of("data/inventory-journals"),
+        maxRecordBytes = MAX_JOURNAL_BYTES,
+        encode = { record: InventoryJournalRecord ->
+            (gson.toJson(record) + "\n").toByteArray(StandardCharsets.UTF_8)
+        },
+        decode = { bytes ->
+            requireNotNull(gson.fromJson(bytes.toString(StandardCharsets.UTF_8), InventoryJournalRecord::class.java))
+        },
+        validate = InventoryJournalRecord::validated,
+    )
 
     fun write(record: InventoryJournalRecord) {
         val validated = record.validated()
-        val target = path(validated.giveawayId, validated.kind)
-        val temporary = Files.createTempFile(directory, ".${validated.giveawayId}-", ".tmp")
-        val bytes = (gson.toJson(validated) + "\n").toByteArray(StandardCharsets.UTF_8)
-        FileChannel.open(temporary, StandardOpenOption.WRITE).use { channel ->
-            channel.write(java.nio.ByteBuffer.wrap(bytes))
-            channel.force(true)
-        }
-        try {
-            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING)
-        }
+        journal.commit(recordId(validated.giveawayId, validated.kind), validated)
     }
 
     fun delete(giveawayId: String, kind: JournalKind) {
-        Files.deleteIfExists(path(giveawayId, kind))
+        journal.acknowledge(recordId(giveawayId, kind))
     }
 
-    fun loadAll(): List<InventoryJournalRecord> {
-        if (!Files.isDirectory(directory)) return emptyList()
-        return Files.list(directory).use { paths ->
-            paths.filter { it.fileName.toString().endsWith(".json") }.map { file ->
-                val raw = Files.readString(file)
-                require(raw.length <= MAX_JOURNAL_CHARS) { "Inventory journal is too large" }
-                gson.fromJson(raw, InventoryJournalRecord::class.java).validated()
-            }.toList()
+    fun loadAll(): List<InventoryJournalRecord> = journal.loadAll().map { stored ->
+        stored.value.also { record ->
+            require(stored.recordId == recordId(record.giveawayId, record.kind)) {
+                "Inventory journal filename does not match its record identity"
+            }
         }
     }
 
-    private fun path(giveawayId: String, kind: JournalKind): Path {
+    private fun recordId(giveawayId: String, kind: JournalKind): String {
         UUID.fromString(giveawayId)
-        return directory.resolve("$giveawayId-${kind.name.lowercase()}.json")
+        return "$giveawayId-${kind.name.lowercase()}"
     }
 
     companion object {
-        private const val MAX_JOURNAL_CHARS = 3_000_000
+        private const val MAX_JOURNAL_BYTES = 3_000_000L
     }
 }
