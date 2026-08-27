@@ -2,11 +2,11 @@ package ru.ruscrafting.giveaways.network
 
 import com.google.gson.Gson
 import ru.arc.redis.RedisOperations
+import ru.arc.redis.network.RedisReplayPolicy
+import ru.arc.redis.network.ValidatedRedisTopic
 import ru.arc.redis.safety.BoundedJsonCodec
 import ru.arc.redis.safety.JsonObjectContract
 import ru.arc.redis.safety.JsonResourceBounds
-import ru.arc.redis.safety.OriginBoundRedisBus
-import ru.arc.redis.safety.RecentMessageDeduplicator
 import ru.arc.redis.safety.RedisHashConsumeResult
 import ru.arc.redis.safety.RedisHashDecision
 import ru.arc.redis.safety.RedisHashUpdateResult
@@ -74,18 +74,21 @@ class RedisGiveawayRepository(
     private val records = RedisHashUpdater(redis, RECORDS_KEY, recordCodec, MAX_CAS_ATTEMPTS)
     private val pending = RedisHashUpdater(redis, PENDING_KEY, pendingCodec, MAX_CAS_ATTEMPTS)
 
-    fun registerEvents(
+    fun openEvents(
         originAllowed: (String) -> Boolean,
         listener: (GiveawayWireEvent, String) -> Unit,
-    ): OriginBoundRedisBus<GiveawayWireEvent> = OriginBoundRedisBus(
+    ): ValidatedRedisTopic<GiveawayWireEvent> = ValidatedRedisTopic.open(
         redis = redis,
         channel = EVENT_CHANNEL,
         codec = eventCodec,
         originAllowed = originAllowed,
-        messageId = { event -> "${event.giveawayId}:${event.revision}:${event.type.name}" },
-        deduplicator = RecentMessageDeduplicator(EVENT_DEDUPLICATION_MS),
+        replay = RedisReplayPolicy(
+            messageId = { event -> "${event.giveawayId}:${event.revision}:${event.type.name}" },
+            ttlMillis = EVENT_DEDUPLICATION_MS,
+            maxEntries = MAX_SEEN_EVENTS,
+        ),
         onMessage = listener,
-    ).also(OriginBoundRedisBus<GiveawayWireEvent>::register)
+    )
 
     fun create(record: GiveawayRecord): CompletableFuture<Boolean> {
         val validated = record.validated(maxParticipants)
@@ -179,6 +182,7 @@ class RedisGiveawayRepository(
         private const val MAX_RECORD_CHARS = 1_600_000
         private const val MAX_CAS_ATTEMPTS = 12
         private const val EVENT_DEDUPLICATION_MS = 10L * 60L * 1_000L
+        private const val MAX_SEEN_EVENTS = 10_000
         private val PENDING_FIELDS = setOf("giveawayId", "expiresAtMs")
         private val EVENT_FIELDS = setOf("protocolVersion", "type", "giveawayId", "revision")
         private val RECORD_FIELDS = setOf(

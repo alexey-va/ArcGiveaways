@@ -8,7 +8,8 @@ giveaways.
   composite only with `-ParcCoreDir=/absolute/path/to/arc-core`. Consult
   `../arc-core/docs/shared-primitives.md` before adding
   infrastructure; ArcGiveaways owns only its giveaway domain and Redis schema.
-- Paper tests use `ru.ruscrafting.arc:arc-core-paper-testing:2.0.0` and
+- Paper tests use the pinned `arcCoreVersion` through
+  `ru.ruscrafting.arc:arc-core-paper-testing` and
   `MockBukkitTestRuntime`; never pin or manage MockBukkit directly here.
 - Keep the giveaway state machine and Redis protocol independent of Bukkit.
 - Redis is mandatory: fail closed when the connection or atomic state update is

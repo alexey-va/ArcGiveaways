@@ -68,7 +68,7 @@ class GiveawayService(
     private val pvpNoticeAt = mutableMapOf<UUID, Long>()
     private val recoveryIncidents = InventoryRecoveryIncidentTracker()
     private val secureRandom = SecureRandom()
-    private val eventBus = repository.registerEvents(
+    private val eventBus = repository.openEvents(
         originAllowed = { origin -> origin != settings.serverId && origin in settings.allowedOrigins },
     ) { event, _ -> refresh(event.giveawayId, event.type) }
     private var tickTask: ScheduledTask? = null

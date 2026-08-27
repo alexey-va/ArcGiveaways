@@ -53,7 +53,7 @@ class RedisGiveawayRepositoryTest :
             val redis = InMemoryRedis()
             val repository = RedisGiveawayRepository(redis)
             val events = mutableListOf<GiveawayEventType>()
-            val bus = repository.registerEvents(originAllowed = { true }) { event, _ -> events += event.type }
+            val bus = repository.openEvents(originAllowed = { true }) { event, _ -> events += event.type }
             val initial = giveaway()
 
             repository.create(initial).join().shouldBeTrue()
@@ -75,7 +75,7 @@ class RedisGiveawayRepositoryTest :
             val redis = InMemoryRedis(ServerIdentity { "spawn" })
             val repository = RedisGiveawayRepository(redis)
             val received = mutableListOf<GiveawayWireEvent>()
-            val bus = repository.registerEvents(originAllowed = { it == "survival" }) { event, _ -> received += event }
+            val bus = repository.openEvents(originAllowed = { it == "survival" }) { event, _ -> received += event }
 
             repository.create(giveaway()).join().shouldBeTrue()
             val raw = redis.getPublishedMessages().single().message
