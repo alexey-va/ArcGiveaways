@@ -2,6 +2,7 @@ package ru.ruscrafting.giveaways.config
 
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
+import org.opentest4j.TestAbortedException
 import ru.arc.config.ConfigManager
 import java.nio.file.Files
 import java.nio.file.Path
@@ -9,7 +10,8 @@ import java.nio.file.Path
 class GiveawayConfigTest :
     StringSpec({
         "tracked runtime profiles expose the exact server-id key" {
-            val repositoryRoot = Path.of(requireNotNull(System.getProperty("arcgiveaways.repositoryRoot")))
+            val repositoryRoot = System.getProperty("ruscrafting.opsRoot")?.let(Path::of)
+                ?: throw TestAbortedException("RusCrafting ops checkout is not configured")
             mapOf(
                 "classic" to "spawn",
                 "classic_survival" to "survival",

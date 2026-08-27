@@ -49,7 +49,10 @@ tasks {
     }
     test {
         useJUnitPlatform()
-        systemProperty("arcgiveaways.repositoryRoot", projectDir.parentFile.absolutePath)
+        providers.gradleProperty("ruscraftingOpsRoot")
+            .orElse(providers.environmentVariable("RUSCRAFTING_OPS_ROOT"))
+            .orNull
+            ?.let { systemProperty("ruscrafting.opsRoot", it) }
     }
     register<Test>("integrationTest") {
         description = "Runs the disposable Redis integration test."

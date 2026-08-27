@@ -19,4 +19,6 @@ giveaways.
   after restart. Never retry an ambiguous inventory mutation blindly.
 - All player text belongs in `lang/ru.yml` and `lang/en.yml`; locale keys remain
   identical and untrusted names use non-parsing placeholders.
-- Build and test with `../arc-core/gradlew -p . clean check shadowJar`.
+- Build and test with `./gradlew clean check shadowJar`. Set
+  `RUSCRAFTING_OPS_ROOT=/absolute/path/to/ruscrafting-ops` to include tests
+  that verify tracked runtime profiles.

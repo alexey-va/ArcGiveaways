@@ -18,7 +18,7 @@ radius enter the final draw snapshot.
 ## Build
 
 ```bash
-../arc-core/gradlew -p . clean check shadowJar
+./gradlew clean check shadowJar
 ```
 
 The deployable artifact is `build/libs/ArcGiveaways-0.1.5.jar`.
