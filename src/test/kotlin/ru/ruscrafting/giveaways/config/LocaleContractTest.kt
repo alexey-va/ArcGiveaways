@@ -93,7 +93,35 @@ class LocaleContractTest :
 
                 val rendered = locale.render(MessageKey.JOIN_BUTTON, player)
 
-                PlainTextComponentSerializer.plainText().serialize(rendered) shouldBe "• [Присоединиться]"
+                PlainTextComponentSerializer.plainText().serialize(rendered) shouldBe "▶ [Участвовать] нажмите, чтобы залететь"
+            } finally {
+                ConfigManager.clear()
+                root.toFile().deleteRecursively()
+            }
+        }
+
+        "bundled visual upgrade replaces legacy defaults but preserves operator text" {
+            val root = Files.createTempDirectory("arcgiveaways-visual-upgrade-")
+            try {
+                Files.createDirectories(root.resolve("lang"))
+                listOf("ru", "en").forEach { language ->
+                    requireNotNull(javaClass.getResourceAsStream("/lang/$language.yml")).use {
+                        Files.copy(it, root.resolve("lang/$language.yml"))
+                    }
+                }
+                ConfigManager.clear()
+                val russian = ConfigManager.of(root, "lang/ru.yml")
+                russian.setString(
+                    "announcement",
+                    "<#92bed8>Раздача</color> <#666666>•</color> <#e6fff3><host> разыгрывает</color><newline><#666666>•</color> <item> <#8c8c8c>·</color> <#969696><seconds> сек.</color>",
+                )
+                russian.setString("join-button", "<green>Моя кнопка</green>")
+                russian.saveStrict()
+
+                GiveawayLocale.upgradeBundledVisuals(root)
+
+                russian.string("announcement").contains("✦ Раздача от <host> ✦") shouldBe true
+                russian.string("join-button") shouldBe "<green>Моя кнопка</green>"
             } finally {
                 ConfigManager.clear()
                 root.toFile().deleteRecursively()

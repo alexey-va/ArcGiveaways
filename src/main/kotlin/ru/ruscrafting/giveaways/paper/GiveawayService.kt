@@ -14,9 +14,10 @@ import org.bukkit.entity.Firework
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
-import ru.arc.core.ScheduledTask
-import ru.arc.core.Tasks
+import ru.arc.core.LifecycleTaskScope
+import ru.arc.core.whenCompleteSync
 import ru.arc.network.BackendServerId
+import ru.arc.observability.StructuredDebugLine
 import ru.arc.paper.network.BackendTransfer
 import ru.arc.paper.network.BackendTransferResult
 import ru.arc.persistence.DurableAcknowledgementOutcome
@@ -31,6 +32,9 @@ import ru.ruscrafting.giveaways.domain.GiveawayRecord
 import ru.ruscrafting.giveaways.domain.GiveawayStatus
 import ru.ruscrafting.giveaways.domain.ItemPayload
 import ru.ruscrafting.giveaways.network.GiveawayEventType
+import ru.ruscrafting.giveaways.network.GiveawayBackendDirectory
+import ru.ruscrafting.giveaways.network.GiveawayHostLeaseCoordinator
+import ru.ruscrafting.giveaways.network.HostClaimOutcome
 import ru.ruscrafting.giveaways.network.PendingJoin
 import ru.ruscrafting.giveaways.network.RedisGiveawayRepository
 import ru.ruscrafting.giveaways.network.RepositoryUpdate
@@ -39,6 +43,7 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
 
@@ -47,14 +52,20 @@ class GiveawayService(
     private var settings: GiveawayConfig,
     private val locale: GiveawayLocale,
     private val repository: RedisGiveawayRepository,
-    private val journalStore: InventoryJournalStore,
+    private val journalStore: InventoryJournalRepository,
     private val itemNames: RussianItemNames,
     private val transfer: BackendTransfer,
+    private val backendDirectory: GiveawayBackendDirectory,
     private val clockMs: () -> Long = System::currentTimeMillis,
+    private val presentation: GiveawayPresentationPort = NativeGiveawayPresentationPort,
+    private val travel: GiveawayTravelPort = NativeGiveawayTravelPort,
+    private val playerData: GiveawayPlayerDataPersistence = NativeGiveawayPlayerDataPersistence,
 ) : AutoCloseable {
     private var engine = newEngine(settings)
+    private val lifecycleTasks = LifecycleTaskScope()
     private val cache = ConcurrentHashMap<String, GiveawayRecord>()
     private val inventoryLocks = ConcurrentHashMap.newKeySet<UUID>()
+    private val startsInFlight = ConcurrentHashMap.newKeySet<String>()
     private val cooldowns = ConcurrentHashMap<UUID, Long>()
     private val journals = ConcurrentHashMap<String, InventoryJournalRecord>()
     private val cacheMutationLock = Any()
@@ -67,12 +78,19 @@ class GiveawayService(
     private val claimNoticeAt = mutableMapOf<UUID, Long>()
     private val pvpNoticeAt = mutableMapOf<UUID, Long>()
     private val recoveryIncidents = InventoryRecoveryIncidentTracker()
+    private val presenceFailureLogged = AtomicBoolean()
     private val secureRandom = SecureRandom()
+    private val qaSummary = StructuredDebugLine("ARCGIVEAWAYS_QA")
+    private val qaRecord = StructuredDebugLine("ARCGIVEAWAYS_QA_RECORD")
+    private val qaJournal = StructuredDebugLine("ARCGIVEAWAYS_QA_JOURNAL")
     private val eventBus = repository.openEvents(
-        originAllowed = { origin -> origin != settings.serverId && origin in settings.allowedOrigins },
-    ) { event, _ -> refresh(event.giveawayId, event.type) }
-    private var tickTask: ScheduledTask? = null
-    private var reconcileTask: ScheduledTask? = null
+        originAllowed = settings.allowedOrigins::contains,
+    ) { event, _ -> refresh(event) }
+    private val hostLeases = GiveawayHostLeaseCoordinator(
+        repository = repository,
+        availability = backendDirectory::probe,
+        cancelUnavailable = { record -> engine.cancel(record, clockMs(), "owner_backend_unavailable") },
+    )
     private val inventoryRecovery = DurableRecoveryWorkflow<InventoryJournalRecord, InventoryJournalRecord>(
         commit = { candidate -> completed { journalStore.write(candidate) } },
         sameContent = { candidate, committed -> candidate == committed },
@@ -82,8 +100,14 @@ class GiveawayService(
     fun start() {
         journalStore.loadAll().forEach { journals[journalKey(it.giveawayId, it.kind)] = it }
         reconcile()
-        tickTask = Tasks.scheduler.runTimer(20, 20, Runnable(::tick))
-        reconcileTask = Tasks.scheduler.runTimer(40, 100, Runnable(::reconcile))
+        heartbeatPresence()
+        lifecycleTasks.runTimer(20, 20, ::tick)
+        lifecycleTasks.runTimer(40, 100, ::reconcile)
+        lifecycleTasks.runTimer(
+            settings.presenceHeartbeatSeconds * TICKS_PER_SECOND,
+            settings.presenceHeartbeatSeconds * TICKS_PER_SECOND,
+            ::heartbeatPresence,
+        )
     }
 
     fun reload(updated: GiveawayConfig) {
@@ -92,11 +116,12 @@ class GiveawayService(
     }
 
     override fun close() {
-        tickTask?.cancel()
-        reconcileTask?.cancel()
+        lifecycleTasks.close()
         eventBus.close()
+        backendDirectory.close()
         bossBars.keys.toList().forEach(::removeBossBar)
         inventoryLocks.clear()
+        startsInFlight.clear()
         recoveryIncidents.clearAll()
     }
 
@@ -125,6 +150,10 @@ class GiveawayService(
     /** Constant-time count of locally observed active host claims. */
     fun activeLeaseCount(): Int = activeLeaseGauge.count()
 
+    fun backendLeaseCount(): Int = backendDirectory.activeLeaseCount()
+
+    fun participantCount(): Int = cache.values.sumOf { it.participants.size }
+
     fun qaReport(idOrPrefix: String?): List<String> {
         val allIds = (cache.keys + journals.values.map { it.giveawayId }).distinct().sorted()
         val selectedId = idOrPrefix?.let { value ->
@@ -132,22 +161,44 @@ class GiveawayService(
             allIds.filter { it == normalized || it.startsWith(normalized) }.singleOrNull()
         }
         if (idOrPrefix != null && selectedId == null) {
-            return listOf("ARCGIVEAWAYS_QA status=not_found query=${idOrPrefix.take(64)}")
+            return listOf(qaSummary.line("status" to "not_found", "query" to idOrPrefix))
         }
         val selectedRecords = if (selectedId == null) cache.values.sortedBy { it.createdAtMs } else listOfNotNull(cache[selectedId])
         val selectedJournals = journals.values
             .filter { selectedId == null || it.giveawayId == selectedId }
             .sortedWith(compareBy(InventoryJournalRecord::giveawayId, { it.kind.name }))
         val lines = mutableListOf(
-            "ARCGIVEAWAYS_QA status=ok server=${settings.serverId} records=${selectedRecords.size} active=${selectedRecords.count(GiveawayRecord::isActive)} journals=${selectedJournals.size}",
+            qaSummary.line(
+                "status" to "ok",
+                "server" to settings.serverId,
+                "records" to selectedRecords.size,
+                "active" to selectedRecords.count(GiveawayRecord::isActive),
+                "journals" to selectedJournals.size,
+                "backend_leases" to backendDirectory.activeLeaseCount(),
+            ),
         )
         selectedRecords.forEach { record ->
-            lines += "ARCGIVEAWAYS_QA_RECORD id=${record.displayId()} status=${record.status.name} owner=${record.serverId} participants=${record.participants.size} eligible=${if (record.serverId == settings.serverId) eligibleParticipants(record).size else -1} winner=${record.winner != null}"
+            lines += qaRecord.line(
+                "id" to record.displayId(),
+                "status" to record.status.name,
+                "owner" to record.serverId,
+                "participants" to record.participants.size,
+                "eligible" to if (record.serverId == settings.serverId) eligibleParticipants(record).size else -1,
+                "winner" to (record.winner != null),
+                "host_reserved" to record.reservesHost(),
+            )
         }
         selectedJournals.forEach { journal ->
             val player = runCatching { Bukkit.getPlayer(UUID.fromString(journal.playerId)) }.getOrNull()?.takeIf(Player::isOnline)
             val state = player?.let { InventoryPlan.from(journal.changes).state(it).name } ?: "OFFLINE"
-            lines += "ARCGIVEAWAYS_QA_JOURNAL id=${journal.giveawayId.take(8)} kind=${journal.kind.name} status=${journal.status.name} player=${if (player == null) "OFFLINE" else "ONLINE"} state=$state changes=${journal.changes.size}"
+            lines += qaJournal.line(
+                "id" to journal.giveawayId.take(8),
+                "kind" to journal.kind.name,
+                "status" to journal.status.name,
+                "player" to if (player == null) "OFFLINE" else "ONLINE",
+                "state" to state,
+                "changes" to journal.changes.size,
+            )
         }
         return lines
     }
@@ -218,6 +269,7 @@ class GiveawayService(
             return
         }
         journals[journalKey(id, JournalKind.ESCROW)] = journal
+        startsInFlight += id
         val location = player.location
         val record = GiveawayRecord(
             id = id,
@@ -238,54 +290,103 @@ class GiveawayService(
         ).validated(settings.maximumParticipants)
         player.sendMessage(locale.render(MessageKey.STARTING, player))
 
-        repository.claimHost(record.hostId, record.id).thenCompose { claimed ->
-            if (!claimed) CompletableFuture.completedFuture(false) else repository.create(record)
+        hostLeases.claim(record.hostId, record.id).thenCompose { outcome ->
+            if (outcome != HostClaimOutcome.Claimed) CompletableFuture.completedFuture(false)
+            else repository.create(record)
         }.onMain(
             success = { created ->
                 if (!created) {
-                    cleanupFailedStart(record, player, itemWasRemoved = false)
+                    startsInFlight.remove(record.id)
+                    cleanupRejectedStart(record, player)
                     player.sendMessage(locale.render(MessageKey.BUSY, player))
                     return@onMain
                 }
-                if (!player.isOnline || plan.state(player) != PlanState.BEFORE || !plan.apply(player)) {
-                    repository.update(record.id) { current ->
-                        if (current.status == GiveawayStatus.PREPARING) current.copy(
-                            status = GiveawayStatus.CANCELLED,
-                            terminalAtMs = clockMs(),
-                            terminalReason = "escrow_not_removed",
-                        ) else null
-                    }
-                    cleanupFailedStart(record, player, itemWasRemoved = false)
-                    player.sendMessage(locale.render(MessageKey.START_FAILED, player))
-                    return@onMain
-                }
-                val applied = journal.copy(status = JournalStatus.APPLIED)
-                journalStore.write(applied)
-                journals[journalKey(id, JournalKind.ESCROW)] = applied
-                repository.update(id) { current -> if (current.status == GiveawayStatus.PREPARING) engine.open(current) else null }
-                    .onMain(
-                        success = { result ->
-                            inventoryLocks.remove(player.uniqueId)
-                            val opened = (result as? RepositoryUpdate.Changed)?.after
-                            if (opened?.status == GiveawayStatus.OPEN) {
-                                cooldowns[player.uniqueId] = now + settings.hostCooldownSeconds * 1000L
-                                acceptRecord(opened)
-                                player.sendMessage(locale.render(MessageKey.STARTED, player, values("id", opened.displayId())))
-                            } else {
-                                player.sendMessage(locale.render(MessageKey.GENERIC_ERROR, player))
-                            }
-                        },
-                        failure = { failure ->
-                            inventoryLocks.remove(player.uniqueId)
-                            plugin.logger.severe("Giveaway $id remained PREPARING after escrow: ${failure.message}")
-                            player.sendMessage(locale.render(MessageKey.GENERIC_ERROR, player))
-                        },
-                    )
+                continueConfirmedStart(record, journal, plan, player, now)
             },
             failure = { failure ->
-                cleanupFailedStart(record, player, itemWasRemoved = false)
+                startsInFlight.remove(record.id)
+                inventoryLocks.remove(player.uniqueId)
                 plugin.logger.warning("Could not create giveaway $id: ${failure.message}")
                 player.sendMessage(locale.render(MessageKey.REDIS_UNAVAILABLE, player))
+                reconcileUnknownStart(record.id)
+            },
+        )
+    }
+
+    private fun continueConfirmedStart(
+        record: GiveawayRecord,
+        journal: InventoryJournalRecord,
+        plan: InventoryPlan,
+        player: Player,
+        startedAtMs: Long,
+    ) {
+        if (!player.isOnline || plan.state(player) != PlanState.BEFORE) {
+            cancelUnmutatedStart(record, player)
+            return
+        }
+        val applied = runCatching { persistThenApply(journal, plan, player) }
+            .onFailure { failure ->
+                startsInFlight.remove(record.id)
+                inventoryLocks.remove(player.uniqueId)
+                plugin.logger.severe("Could not persist applied escrow for ${record.id}: ${failure.message}")
+                player.sendMessage(locale.render(MessageKey.GENERIC_ERROR, player))
+                reconcileUnknownStart(record.id)
+            }
+            .getOrNull() ?: return
+        startsInFlight.remove(record.id)
+        journals[journalKey(record.id, JournalKind.ESCROW)] = applied
+        repository.update(record.id) { current ->
+            if (current.status == GiveawayStatus.PREPARING) engine.open(current) else null
+        }.onMain(
+            success = { result ->
+                inventoryLocks.remove(player.uniqueId)
+                val opened = when (result) {
+                    is RepositoryUpdate.Changed -> result.after
+                    is RepositoryUpdate.Rejected -> result.current
+                    else -> null
+                }?.takeIf { it.status == GiveawayStatus.OPEN }
+                if (opened != null) {
+                    cooldowns[player.uniqueId] = startedAtMs + settings.hostCooldownSeconds * 1_000L
+                    acceptRecord(opened)
+                    player.sendMessage(locale.render(MessageKey.STARTED, player, values("id", opened.displayId())))
+                } else {
+                    player.sendMessage(locale.render(MessageKey.GENERIC_ERROR, player))
+                    reconcileUnknownStart(record.id)
+                }
+            },
+            failure = { failure ->
+                inventoryLocks.remove(player.uniqueId)
+                plugin.logger.severe("Giveaway ${record.id} remained PREPARING after escrow: ${failure.message}")
+                player.sendMessage(locale.render(MessageKey.GENERIC_ERROR, player))
+                reconcileUnknownStart(record.id)
+            },
+        )
+    }
+
+    private fun cancelUnmutatedStart(record: GiveawayRecord, player: Player) {
+        startsInFlight.remove(record.id)
+        repository.update(record.id) { current ->
+            if (current.status == GiveawayStatus.PREPARING) current.copy(
+                status = GiveawayStatus.CANCELLED,
+                terminalAtMs = clockMs(),
+                terminalReason = "escrow_not_removed",
+            ) else null
+        }.onMain(
+            success = { result ->
+                inventoryLocks.remove(player.uniqueId)
+                val current = when (result) {
+                    is RepositoryUpdate.Changed -> result.after
+                    is RepositoryUpdate.Rejected -> result.current
+                    else -> null
+                }
+                if (current != null) acceptRecord(current)
+                player.sendMessage(locale.render(MessageKey.START_FAILED, player))
+            },
+            failure = { failure ->
+                inventoryLocks.remove(player.uniqueId)
+                plugin.logger.warning("Could not cancel unmutated giveaway ${record.id}: ${failure.message}")
+                player.sendMessage(locale.render(MessageKey.REDIS_UNAVAILABLE, player))
+                reconcileUnknownStart(record.id)
             },
         )
     }
@@ -313,13 +414,13 @@ class GiveawayService(
     }
 
     fun onPlayerJoin(player: Player) {
-        Tasks.scheduler.runLater(40, Runnable {
+        lifecycleTasks.runLater(40) {
             repository.consumePendingJoin(player.uniqueId.toString(), clockMs()).onMain(
                 success = { pending -> if (pending != null) joinTransferred(player, pending.giveawayId) },
                 failure = { plugin.logger.warning("Could not consume pending giveaway join for ${player.uniqueId}") },
             )
             recoverFor(player)
-        })
+        }
     }
 
     fun onPlayerQuit(player: Player) {
@@ -461,7 +562,7 @@ class GiveawayService(
             player.sendMessage(locale.render(MessageKey.NOT_OPEN, player))
             return
         }
-        player.teleportAsync(arrivalLocation(host)).onMain(
+        travel.teleport(player, travel.arrivalNear(host)).onMain(
             success = { teleported ->
                 if (teleported && player.isOnline) joinLocal(player, record)
                 else player.sendMessage(locale.render(MessageKey.TELEPORT_FAILED, player))
@@ -471,21 +572,6 @@ class GiveawayService(
                 player.sendMessage(locale.render(MessageKey.TELEPORT_FAILED, player))
             },
         )
-    }
-
-    private fun arrivalLocation(host: Player): Location {
-        val base = host.location
-        val candidates = listOf(
-            1.5 to 0.0,
-            -1.5 to 0.0,
-            0.0 to 1.5,
-            0.0 to -1.5,
-        ).map { (x, z) -> base.clone().add(x, 0.0, z) }
-        return candidates.firstOrNull { location ->
-            location.block.isPassable &&
-                location.clone().add(0.0, 1.0, 0.0).block.isPassable &&
-                location.clone().subtract(0.0, 1.0, 0.0).block.type.isSolid
-        } ?: base.clone()
     }
 
     private fun transferForJoin(player: Player, record: GiveawayRecord) {
@@ -515,7 +601,7 @@ class GiveawayService(
                 record.serverId == settings.serverId && record.status == GiveawayStatus.DRAWING && now >= (record.drawingEndsAtMs ?: Long.MAX_VALUE) -> selectWinner(record)
                 record.serverId == settings.serverId && record.status in setOf(GiveawayStatus.AWAITING_DELIVERY, GiveawayStatus.AWAITING_REFUND) -> attemptPending(record)
             }
-            if (record.serverId == settings.serverId && record.status in setOf(GiveawayStatus.OPEN, GiveawayStatus.DRAWING)) {
+            if (record.status in setOf(GiveawayStatus.OPEN, GiveawayStatus.DRAWING)) {
                 updateEffects(record, now)
             } else {
                 removeBossBar(record.id)
@@ -650,15 +736,28 @@ class GiveawayService(
         val key = journalKey(record.id, JournalKind.ESCROW)
         val journal = journals[key] ?: return
         val plan = InventoryPlan.from(journal.changes)
-        when (plan.state(host)) {
+        val appliedJournal = when (plan.state(host)) {
             PlanState.BEFORE -> {
                 recoveryIncidents.clear(key)
                 val applied = runCatching { persistThenApply(journal, plan, host) }
                     .onFailure { plugin.logger.severe("Could not converge escrow journal for ${record.id}: ${it.message}") }
                     .getOrNull() ?: return
                 journals[key] = applied
+                applied
             }
-            PlanState.AFTER -> recoveryIncidents.clear(key)
+            PlanState.AFTER -> {
+                recoveryIncidents.clear(key)
+                if (journal.status == JournalStatus.APPLIED) {
+                    journal
+                } else {
+                    val applied = journal.copy(status = JournalStatus.APPLIED)
+                    runCatching { journalStore.write(applied) }
+                        .onFailure { plugin.logger.severe("Could not persist recovered escrow for ${record.id}: ${it.message}") }
+                        .getOrNull() ?: return
+                    journals[key] = applied
+                    applied
+                }
+            }
             PlanState.AMBIGUOUS -> {
                 if (recoveryIncidents.markAmbiguous(key)) {
                     plugin.logger.severe("Ambiguous escrow journal for giveaway ${record.id}; refusing blind recovery")
@@ -666,9 +765,18 @@ class GiveawayService(
                 return
             }
         }
+        check(appliedJournal.status == JournalStatus.APPLIED)
+        inventoryLocks.remove(host.uniqueId)
         repository.update(record.id) { current -> if (current.status == GiveawayStatus.PREPARING) engine.open(current) else null }
             .onMain(
-                success = { result -> (result as? RepositoryUpdate.Changed)?.after?.let(::acceptRecord) },
+                success = { result ->
+                    inventoryLocks.remove(host.uniqueId)
+                    when (result) {
+                        is RepositoryUpdate.Changed -> result.after
+                        is RepositoryUpdate.Rejected -> result.current
+                        else -> null
+                    }?.let(::acceptRecord)
+                },
                 failure = { plugin.logger.warning("Could not recover PREPARING giveaway ${record.id}: ${it.message}") },
             )
     }
@@ -691,37 +799,64 @@ class GiveawayService(
     }
 
     private fun updateEffects(record: GiveawayRecord, now: Long) {
-        val viewers = nearbyPlayers(record)
+        val allViewers = Bukkit.getOnlinePlayers().toList()
+        val participantViewers = participantPlayers(
+            if (record.status == GiveawayStatus.DRAWING) record.drawingCandidates else record.participants,
+        )
         if (settings.bossBarEnabled) {
-            val total = (record.drawAtMs - record.opensAtMs).coerceAtLeast(1L)
-            val remaining = (record.drawAtMs - now).coerceAtLeast(0L)
-            val progress = if (record.status == GiveawayStatus.DRAWING) 1f else (remaining.toDouble() / total).toFloat().coerceIn(0f, 1f)
-            val name = if (record.status == GiveawayStatus.DRAWING) {
-                locale.render(MessageKey.DRAWING_TITLE)
+            val drawing = record.status == GiveawayStatus.DRAWING
+            val remaining = if (drawing) {
+                ((record.drawingEndsAtMs ?: now) - now).coerceAtLeast(0L)
             } else {
-                itemComponent(record).append(Component.text(" · ${ceil(remaining / 1000.0).toInt()}с"))
+                (record.drawAtMs - now).coerceAtLeast(0L)
             }
+            val total = if (drawing) settings.drawingSeconds * 1_000L else (record.drawAtMs - record.opensAtMs).coerceAtLeast(1L)
+            val progress = (remaining.toDouble() / total).toFloat().coerceIn(0f, 1f)
+            val name = locale.render(
+                if (drawing) MessageKey.BOSSBAR_DRAWING else MessageKey.BOSSBAR_OPEN,
+                values = values(
+                    "item", itemComponent(record),
+                    "seconds", ceil(remaining / 1000.0).toInt(),
+                    "host", record.hostName,
+                    "count", record.participants.size,
+                ),
+            )
             val bar = bossBars.getOrPut(record.id) { BossBar.bossBar(name, progress, BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS) }
-            bar.name(name); bar.progress(progress)
-            syncBossViewers(record.id, bar, viewers)
+            bar.name(name)
+            bar.progress(progress)
+            bar.color(if (drawing) BossBar.Color.RED else BossBar.Color.YELLOW)
+            syncBossViewers(record.id, bar, allViewers)
+        } else {
+            removeBossBar(record.id)
         }
         if (record.status == GiveawayStatus.OPEN) {
             val seconds = ceil((record.drawAtMs - now).coerceAtLeast(0L) / 1000.0).toInt()
-            if (seconds in 1..5 && countdownSecond.put(record.id, seconds) != seconds) {
-                viewers.forEach { player ->
-                    if (settings.titlesEnabled) player.showTitle(Title.title(
-                        locale.render(MessageKey.COUNTDOWN_TITLE, player, values("seconds", seconds)),
-                        locale.render(MessageKey.COUNTDOWN_SUBTITLE, player),
-                        Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(700), Duration.ofMillis(150)),
-                    ))
-                    play(player, "minecraft:block.note_block.pling", 1f, 0.8f + (5 - seconds) * 0.12f)
+            if (countdownSecond.put(record.id, seconds) != seconds) {
+                participantViewers.forEach { player ->
+                    if (settings.actionBarEnabled) {
+                        player.sendActionBar(locale.render(MessageKey.COUNTDOWN_ACTIONBAR, player, values(
+                            "item", itemComponent(record),
+                            "seconds", seconds,
+                            "count", record.participants.size,
+                        )))
+                    }
+                    if (settings.titlesEnabled && seconds in 1..5) {
+                        presentation.showTitle(player, Title.title(
+                            locale.render(MessageKey.COUNTDOWN_TITLE, player, values("seconds", seconds)),
+                            locale.render(MessageKey.COUNTDOWN_SUBTITLE, player, values("item", itemComponent(record))),
+                            Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(700), Duration.ofMillis(150)),
+                        ))
+                        play(player, "minecraft:block.note_block.pling", 1f, 0.8f + (5 - seconds) * 0.12f)
+                    }
                 }
             }
-            if (settings.particlesEnabled && now % 2000L < 1000L) center(record).world.spawnParticle(Particle.END_ROD, center(record).add(0.0, 1.0, 0.0), 12, 1.2, 0.8, 1.2, 0.02)
+            if (record.serverId == settings.serverId && settings.particlesEnabled && now % 2000L < 1000L) {
+                center(record).world.spawnParticle(Particle.END_ROD, center(record).add(0.0, 1.0, 0.0), 12, 1.2, 0.8, 1.2, 0.02)
+            }
         } else if (record.status == GiveawayStatus.DRAWING && record.drawingCandidates.isNotEmpty()) {
             val candidate = record.drawingCandidates[(now / 250L % record.drawingCandidates.size).toInt()].playerName
-            viewers.forEach { player ->
-                if (settings.titlesEnabled) player.showTitle(Title.title(
+            participantViewers.forEach { player ->
+                if (settings.titlesEnabled) presentation.showTitle(player, Title.title(
                     locale.render(MessageKey.DRAWING_TITLE, player),
                     locale.render(MessageKey.DRAWING_SUBTITLE, player, values("candidate", candidate)),
                     Title.Times.times(Duration.ZERO, Duration.ofMillis(350), Duration.ZERO),
@@ -733,6 +868,8 @@ class GiveawayService(
 
     private fun acceptRecord(record: GiveawayRecord) {
         val previous = synchronized(cacheMutationLock) {
+            val current = cache[record.id]
+            if (current != null && current.revision >= record.revision) return
             val previous = cache.put(record.id, record)
             activeLeaseGauge.transition(previous?.isActive() == true, record.isActive())
             previous
@@ -745,16 +882,27 @@ class GiveawayService(
             winnerAnnounced += record.id
             announceWinner(record)
         }
-        if (!record.isActive() && previous?.isActive() == true) removeBossBar(record.id)
+        if (!record.reservesHost()) {
+            repository.releaseHost(record.hostId, record.id).whenComplete { _, failure ->
+                if (failure != null) plugin.logger.warning("Could not release host lease for giveaway ${record.id}: ${failure.message}")
+            }
+        }
+        if (record.status == GiveawayStatus.COMPLETED || record.status == GiveawayStatus.CANCELLED) {
+            retireTerminalEscrow(record)
+        }
+        if (record.status !in setOf(GiveawayStatus.OPEN, GiveawayStatus.DRAWING)) {
+            countdownSecond.remove(record.id)
+            removeBossBar(record.id)
+        }
     }
 
     private fun announce(record: GiveawayRecord) {
         Bukkit.getOnlinePlayers().forEach { player ->
-            player.sendMessage(locale.render(MessageKey.ANNOUNCEMENT, player, values(
+            val body = locale.render(MessageKey.ANNOUNCEMENT, player, values(
                 "host", record.hostName,
                 "item", itemComponent(record),
                 "seconds", settings.openSeconds,
-            )))
+            ))
             val hoverKey = if (record.serverId == settings.serverId) MessageKey.JOIN_HOVER_LOCAL else MessageKey.JOIN_HOVER_TRANSFER
             val button = locale.render(MessageKey.JOIN_BUTTON, player)
                 // Standard RUN_COMMAND survives Velocity/ViaVersion backend routing. Paper's
@@ -764,8 +912,20 @@ class GiveawayService(
                     "radius", record.radius.toInt(),
                     "server", locale.serverName(record.serverId, player),
                 ))))
-            player.sendMessage(button)
+            player.sendMessage(GiveawayPresentation.chatAnnouncement(body, button))
             play(player, "minecraft:entity.firework_rocket.launch", 0.65f, 1.1f)
+        }
+    }
+
+    private fun announceJoined(record: GiveawayRecord, participant: GiveawayParticipant) {
+        Bukkit.getOnlinePlayers().forEach { player ->
+            player.sendMessage(locale.render(MessageKey.JOINED_NETWORK, player, values(
+                "player", participant.playerName,
+                "host", record.hostName,
+                "item", itemComponent(record),
+                "count", record.participants.size,
+            )))
+            play(player, "minecraft:block.note_block.chime", 0.45f, 1.35f)
         }
     }
 
@@ -782,7 +942,7 @@ class GiveawayService(
     }
 
     private fun celebrateWinner(player: Player, record: GiveawayRecord) {
-        if (settings.titlesEnabled) player.showTitle(Title.title(
+        if (settings.titlesEnabled) presentation.showTitle(player, Title.title(
             locale.render(MessageKey.WINNER_TITLE, player),
             locale.render(MessageKey.WINNER_SUBTITLE, player, values("item", itemComponent(record))),
             Title.Times.times(Duration.ofMillis(200), Duration.ofSeconds(3), Duration.ofMillis(500)),
@@ -790,31 +950,37 @@ class GiveawayService(
         play(player, "minecraft:ui.toast.challenge_complete", 1f, 1f)
         if (settings.fireworksEnabled) {
             repeat(3) { index ->
-                Tasks.scheduler.runLater(index * 8L, Runnable {
-                    if (!player.isOnline) return@Runnable
+                lifecycleTasks.runLater(index * 8L) firework@{
+                    if (!player.isOnline) return@firework
                     val firework = player.world.spawn(player.location, Firework::class.java)
                     firework.addScoreboardTag(VISUAL_FIREWORK_TAG)
                     firework.fireworkMeta = firework.fireworkMeta.apply {
                         power = 1
                         addEffect(FireworkEffect.builder().with(FireworkEffect.Type.BALL_LARGE).withColor(Color.ORANGE, Color.YELLOW).withFade(Color.WHITE).trail(true).flicker(true).build())
                     }
-                })
+                }
             }
         }
     }
 
-    private fun refresh(id: String, type: GiveawayEventType) {
-        if (type == GiveawayEventType.DELETED) {
-            Tasks.scheduler.runSync(
-                Runnable {
-                    removeCachedRecord(id)
-                    removeBossBar(id)
-                },
-            )
+    private fun refresh(event: ru.ruscrafting.giveaways.network.GiveawayWireEvent) {
+        val id = event.giveawayId
+        if (event.type == GiveawayEventType.DELETED) {
+            lifecycleTasks.runSync {
+                removeCachedRecord(id)
+                removeBossBar(id)
+            }
             return
         }
         repository.load(id).onMain(
-            success = { it?.let(::acceptRecord) },
+            success = { record ->
+                if (record != null) {
+                    acceptRecord(record)
+                    if (event.type == GiveawayEventType.JOINED) {
+                        event.participant?.let { participant -> announceJoined(record, participant) }
+                    }
+                }
+            },
             failure = { plugin.logger.warning("Could not refresh giveaway $id: ${it.message}") },
         )
     }
@@ -825,9 +991,21 @@ class GiveawayService(
                 val ids = records.map { it.id }.toSet()
                 records.forEach(::acceptRecord)
                 cache.keys.filter { it !in ids }.forEach { removeCachedRecord(it); removeBossBar(it) }
+                journals.values.filter { it.kind == JournalKind.ESCROW && it.giveawayId !in ids }
+                    .forEach(::reconcileOrphanEscrow)
             },
             failure = { plugin.logger.warning("Giveaway Redis reconciliation failed: ${it.message}") },
         )
+    }
+
+    private fun heartbeatPresence() {
+        backendDirectory.heartbeat().whenComplete { _, failure ->
+            if (failure == null) {
+                presenceFailureLogged.set(false)
+            } else if (presenceFailureLogged.compareAndSet(false, true)) {
+                plugin.logger.warning("Giveaway backend presence refresh failed: ${failure.message}")
+            }
+        }
     }
 
     private fun cleanupTerminal(now: Long) {
@@ -841,18 +1019,85 @@ class GiveawayService(
         }
     }
 
-    private fun cleanupFailedStart(record: GiveawayRecord, player: Player, itemWasRemoved: Boolean) {
+    private fun cleanupRejectedStart(record: GiveawayRecord, player: Player) {
         inventoryLocks.remove(player.uniqueId)
-        if (!itemWasRemoved) {
-            val key = journalKey(record.id, JournalKind.ESCROW)
-            journals[key]?.let { journal ->
-                runCatching { journalStore.acknowledgeExactly(journal) }
-                    .onSuccess { outcome ->
-                        if (outcome != DurableAcknowledgementOutcome.CONTENT_MISMATCH) journals.remove(key)
-                    }
-            }
+        val key = journalKey(record.id, JournalKind.ESCROW)
+        journals[key]?.let(::retireUnmutatedOrphan)
+        repository.releaseHost(record.hostId, record.id).whenComplete { _, failure ->
+            if (failure != null) plugin.logger.warning("Could not release rejected host claim ${record.id}: ${failure.message}")
         }
-        repository.releaseHost(record.hostId, record.id)
+    }
+
+    private fun reconcileUnknownStart(giveawayId: String) {
+        repository.load(giveawayId).onMain(
+            success = { record ->
+                if (record != null) {
+                    acceptRecord(record)
+                    if (record.status == GiveawayStatus.PREPARING) recoverPreparing(record)
+                } else {
+                    journals[journalKey(giveawayId, JournalKind.ESCROW)]?.let(::reconcileOrphanEscrow)
+                }
+            },
+            failure = { plugin.logger.warning("Could not reconcile unknown giveaway start $giveawayId: ${it.message}") },
+        )
+    }
+
+    private fun reconcileOrphanEscrow(journal: InventoryJournalRecord) {
+        if (journal.kind != JournalKind.ESCROW || journal.giveawayId in startsInFlight) return
+        repository.load(journal.giveawayId).onMain(
+            success = { record ->
+                if (record != null) {
+                    acceptRecord(record)
+                    if (record.status == GiveawayStatus.PREPARING) recoverPreparing(record)
+                    return@onMain
+                }
+                inspectOrphanHostClaim(journal)
+            },
+            failure = { plugin.logger.warning("Could not confirm orphan escrow ${journal.giveawayId}: ${it.message}") },
+        )
+    }
+
+    private fun inspectOrphanHostClaim(journal: InventoryJournalRecord) {
+        repository.hostGiveawayId(journal.playerId).onMain(
+            success = { claimedId ->
+                if (journal.giveawayId in startsInFlight) return@onMain
+                if (claimedId != journal.giveawayId) {
+                    retireUnmutatedOrphan(journal)
+                    return@onMain
+                }
+                repository.load(journal.giveawayId).onMain(
+                    success = { record ->
+                        if (record != null) {
+                            acceptRecord(record)
+                            if (record.status == GiveawayStatus.PREPARING) recoverPreparing(record)
+                        } else if (journal.giveawayId !in startsInFlight) {
+                            repository.releaseHost(journal.playerId, journal.giveawayId).onMain(
+                                success = { released -> if (released) retireUnmutatedOrphan(journal) },
+                                failure = { plugin.logger.warning("Could not release orphan host claim ${journal.giveawayId}: ${it.message}") },
+                            )
+                        }
+                    },
+                    failure = { plugin.logger.warning("Could not recheck orphan giveaway ${journal.giveawayId}: ${it.message}") },
+                )
+            },
+            failure = { plugin.logger.warning("Could not inspect orphan escrow ${journal.giveawayId}: ${it.message}") },
+        )
+    }
+
+    private fun retireUnmutatedOrphan(journal: InventoryJournalRecord) {
+        if (journal.status != JournalStatus.PREPARED) return
+        val player = runCatching { Bukkit.getPlayer(UUID.fromString(journal.playerId)) }.getOrNull()
+            ?.takeIf(Player::isOnline) ?: return
+        if (InventoryPlan.from(journal.changes).state(player) != PlanState.BEFORE) return
+        val key = journalKey(journal.giveawayId, journal.kind)
+        runCatching { journalStore.acknowledgeExactly(journal) }
+            .onSuccess { outcome ->
+                if (outcome != DurableAcknowledgementOutcome.CONTENT_MISMATCH) {
+                    journals.remove(key)
+                    recoveryIncidents.clear(key)
+                }
+            }
+            .onFailure { plugin.logger.warning("Could not retire orphan escrow ${journal.giveawayId}: ${it.message}") }
     }
 
     private fun resolveId(value: String): String? {
@@ -864,12 +1109,10 @@ class GiveawayService(
     private fun removeCachedRecord(id: String): GiveawayRecord? = synchronized(cacheMutationLock) {
         cache.remove(id).also { removed ->
             activeLeaseGauge.transition(removed?.isActive() == true, currentActive = false)
+            announced.remove(id)
+            winnerAnnounced.remove(id)
+            countdownSecond.remove(id)
         }
-    }
-
-    private fun hostLocation(record: GiveawayRecord): Location {
-        val host = runCatching { Bukkit.getPlayer(UUID.fromString(record.hostId)) }.getOrNull()
-        return host?.takeIf { it.isOnline && it.world.name == record.worldName }?.location ?: center(record)
     }
 
     private fun center(record: GiveawayRecord): Location {
@@ -877,9 +1120,8 @@ class GiveawayService(
         return Location(world, record.anchorX, record.anchorY, record.anchorZ)
     }
 
-    private fun nearbyPlayers(record: GiveawayRecord): List<Player> {
-        val center = hostLocation(record)
-        return center.world.players.filter { it.location.distanceSquared(center) <= record.radius * record.radius }
+    private fun participantPlayers(participants: List<GiveawayParticipant>): List<Player> = participants.mapNotNull { participant ->
+        runCatching { Bukkit.getPlayer(UUID.fromString(participant.playerId)) }.getOrNull()?.takeIf(Player::isOnline)
     }
 
     private fun syncBossViewers(id: String, bar: BossBar, players: List<Player>) {
@@ -898,7 +1140,7 @@ class GiveawayService(
         val item = restoreItem(record.item)
         val base = item?.let(itemNames::displayName) ?: Component.text(record.item.materialKey)
         val withAmount = if (record.item.amount > 1) base.append(Component.text(" ×${record.item.amount}")) else base
-        return if (item == null) withAmount else withAmount.hoverEvent(item.asHoverEvent())
+        return if (item == null) withAmount else presentation.decorateItemHover(withAmount, item)
     }
 
     private fun restoreItem(payload: ItemPayload): ItemStack? =
@@ -940,7 +1182,7 @@ class GiveawayService(
     ): InventoryJournalRecord = inventoryRecovery.commitThenMutate(journal) { committed ->
         completed {
             check(plan.state(player) == PlanState.BEFORE) { "Inventory changed before committed journal mutation" }
-            check(plan.apply(player)) { "Committed inventory journal mutation did not verify" }
+            check(plan.apply(player, playerData)) { "Committed inventory journal mutation did not verify" }
             journalStore.write(committed.copy(status = JournalStatus.APPLIED))
         }
     }.join().mutation
@@ -959,6 +1201,24 @@ class GiveawayService(
         return true
     }
 
+    private fun retireTerminalEscrow(record: GiveawayRecord) {
+        val key = journalKey(record.id, JournalKind.ESCROW)
+        val journal = journals[key] ?: return
+        runCatching {
+            val retired = if (journal.status == JournalStatus.APPLIED) {
+                retireJournal(journal)
+            } else {
+                journalStore.acknowledgeExactly(journal) != DurableAcknowledgementOutcome.CONTENT_MISMATCH
+            }
+            if (retired) {
+                journals.remove(key)
+                recoveryIncidents.clear(key)
+            }
+        }.onFailure { failure ->
+            plugin.logger.warning("Could not retire terminal escrow journal for ${record.id}: ${failure.message}")
+        }
+    }
+
     private fun <T : Any> completed(operation: () -> T): CompletableFuture<T> =
         runCatching(operation).fold(CompletableFuture<T>::completedFuture, CompletableFuture<T>::failedFuture)
 
@@ -967,13 +1227,14 @@ class GiveawayService(
 
     companion object {
         const val VISUAL_FIREWORK_TAG = "arcgiveaways_visual"
+        private const val TICKS_PER_SECOND = 20L
     }
 
     private fun <T> CompletableFuture<T>.onMain(success: (T) -> Unit, failure: (Throwable) -> Unit) {
-        whenComplete { value, error ->
-            Tasks.scheduler.runSync(Runnable {
-                if (error == null) success(value) else failure(error.cause ?: error)
-            })
+        val token = runCatching(lifecycleTasks::token).getOrNull() ?: return
+        whenCompleteSync(lifecycleTasks, token) { value, error ->
+            @Suppress("UNCHECKED_CAST")
+            if (error == null) success(value as T) else failure(error.cause ?: error)
         }
     }
 }

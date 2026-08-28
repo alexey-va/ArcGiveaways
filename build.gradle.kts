@@ -23,13 +23,13 @@ repositories {
 java { toolchain { languageVersion.set(JavaLanguageVersion.of(25)) } }
 kotlin { jvmToolchain(25) }
 
-val arcCoreVersion = "2.1.0"
-
 dependencies {
     implementation(kotlin("stdlib"))
-    implementation("ru.ruscrafting.arc:arc-core:$arcCoreVersion")
-    implementation("ru.ruscrafting.arc:arc-core-paper:$arcCoreVersion")
-    implementation("ru.ruscrafting.arc:arc-core-redis:$arcCoreVersion")
+    implementation("ru.ruscrafting.arc:arc-core:2.1.3")
+    implementation("ru.ruscrafting.arc:arc-core-logging:2.1.3")
+    implementation("ru.ruscrafting.arc:arc-core-metrics:2.1.3")
+    implementation("ru.ruscrafting.arc:arc-core-paper:2.1.3")
+    implementation("ru.ruscrafting.arc:arc-core-redis:2.1.3")
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
@@ -37,10 +37,11 @@ dependencies {
     testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
     testImplementation("io.kotest:kotest-assertions-core:6.0.7")
     testImplementation("io.mockk:mockk:1.14.7")
-    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:$arcCoreVersion")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:2.1.3")
+    testImplementation("ru.ruscrafting.arc:arc-core-testing:2.1.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     "integrationTestImplementation"(sourceSets.test.get().output)
-    "integrationTestImplementation"("ru.ruscrafting.arc:arc-core-integration-testing:$arcCoreVersion")
+    "integrationTestImplementation"("ru.ruscrafting.arc:arc-core-integration-testing:2.1.3")
     configurations["integrationTestImplementation"].extendsFrom(configurations["testImplementation"])
     configurations["integrationTestRuntimeOnly"].extendsFrom(configurations["testRuntimeOnly"])
 }

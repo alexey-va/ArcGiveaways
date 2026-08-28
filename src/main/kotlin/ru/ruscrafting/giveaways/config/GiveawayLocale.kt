@@ -15,12 +15,14 @@ enum class MessageKey(val path: String) {
     BUSY("busy"), COOLDOWN("cooldown"), STARTING("starting"), STARTED("started"), START_FAILED("start-failed"),
     ANNOUNCEMENT("announcement"),
     JOIN_BUTTON("join-button"), JOIN_HOVER_LOCAL("join-hover-local"), JOIN_HOVER_TRANSFER("join-hover-transfer"),
+    JOINED_NETWORK("joined-network"), BOSSBAR_OPEN("bossbar-open"), BOSSBAR_DRAWING("bossbar-drawing"),
     SERVER_SPAWN("server-spawn"), SERVER_SURVIVAL("server-survival"), SERVER_PARKOUR("server-parkour"),
     SERVER_OTHER("server-other"),
     TRANSFERRING("transferring"), NOT_FOUND("not-found"), NOT_OPEN("not-open"), TOO_FAR("too-far"),
     WRONG_WORLD("wrong-world"), JOINED("joined"), ALREADY_JOINED("already-joined"), FULL("full"),
     HOST_CANNOT_JOIN("host-cannot-join"), STATUS_EMPTY("status-empty"), STATUS_ENTRY("status-entry"),
-    COUNTDOWN_TITLE("countdown-title"), COUNTDOWN_SUBTITLE("countdown-subtitle"), DRAWING_TITLE("drawing-title"),
+    COUNTDOWN_ACTIONBAR("countdown-actionbar"), COUNTDOWN_TITLE("countdown-title"),
+    COUNTDOWN_SUBTITLE("countdown-subtitle"), DRAWING_TITLE("drawing-title"),
     DRAWING_SUBTITLE("drawing-subtitle"), NOT_ENOUGH("not-enough"), CANCELLED("cancelled"),
     CANCEL_DENIED("cancel-denied"), WINNER_NETWORK("winner-network"), WINNER_TITLE("winner-title"),
     WINNER_SUBTITLE("winner-subtitle"), DELIVERY_PENDING("delivery-pending"), DELIVERED("delivered"),
@@ -66,6 +68,22 @@ class GiveawayLocale(
         else settings().defaultLocale
 
     companion object {
+        /** Upgrades only untouched bundled visual strings; operator-customized text is preserved. */
+        fun upgradeBundledVisuals(dataRoot: Path) {
+            VISUAL_MIGRATIONS.forEach { (language, replacements) ->
+                val config = ConfigManager.of(dataRoot, "lang/$language.yml")
+                var changed = false
+                replacements.forEach { (path, migration) ->
+                    val current = config.stringOrNull(path)
+                    if (current == migration.legacy || current == migration.legacyNormalized) {
+                        config.setString(path, migration.replacement)
+                        changed = true
+                    }
+                }
+                if (changed) config.saveStrict()
+            }
+        }
+
         fun validateFiles(dataRoot: Path) {
             listOf("ru", "en").forEach { language ->
                 val config = Config(dataRoot, "lang/$language.yml")
@@ -74,5 +92,51 @@ class GiveawayLocale(
                 }
             }
         }
+
+        private data class VisualMigration(val legacy: String, val replacement: String) {
+            val legacyNormalized: String = legacy.replace(HEX_SHORTHAND) { match -> "<color:#${match.groupValues[1]}>" }
+        }
+
+        private val HEX_SHORTHAND = Regex("<#([0-9a-fA-F]{6})>")
+        private val VISUAL_MIGRATIONS = mapOf(
+            "ru" to mapOf(
+                "announcement" to VisualMigration(
+                    "<#92bed8>Раздача</color> <#666666>•</color> <#e6fff3><host> разыгрывает</color><newline><#666666>•</color> <item> <#8c8c8c>·</color> <#969696><seconds> сек.</color>",
+                    "<gradient:#ff7a18:#ffd166><bold>✦ Раздача от <host> ✦</bold></gradient><newline><#fff3c4>Приз:</color> <item> <#ffcf70>• <seconds> сек. до розыгрыша</color>",
+                ),
+                "join-button" to VisualMigration(
+                    "<#666666>•</color> <#2bba43><bold>[Присоединиться]</bold></color>",
+                    "<gradient:#34d058:#7ee787><bold>▶ [Участвовать]</bold></gradient> <#ffe7a3>нажмите, чтобы залететь</color>",
+                ),
+                "countdown-title" to VisualMigration("<#92bed8><seconds></color>", "<gradient:#ff5f1f:#ffd166><bold><seconds></bold></gradient>"),
+                "countdown-subtitle" to VisualMigration("<#969696>До розыгрыша</color>", "<#fff3c4>До розыгрыша <item> — приготовьтесь!</color>"),
+                "drawing-title" to VisualMigration("<#92bed8>Выбираем победителя</color>", "<gradient:#ff5f1f:#ffd166><bold>Выбираем победителя</bold></gradient>"),
+                "drawing-subtitle" to VisualMigration("<#e6fff3><candidate></color>", "<#fff3c4>✦ <candidate> ✦</color>"),
+                "winner-network" to VisualMigration(
+                    "<prefix> <#2bba43>Победитель: <winner></color><newline><#666666>•</color> <#969696>Приз:</color> <item><newline><#666666>•</color> <#969696>Ведущий: <host></color>",
+                    "<gradient:#34d058:#ffd166><bold>✦ Победитель — <winner> ✦</bold></gradient><newline><#fff3c4>Приз:</color> <item><newline><#ffcf70>Раздачу устроил <host></color>",
+                ),
+                "winner-title" to VisualMigration("<#2bba43>Вы победили</color>", "<gradient:#34d058:#ffd166><bold>Вы победили!</bold></gradient>"),
+            ),
+            "en" to mapOf(
+                "announcement" to VisualMigration(
+                    "<#92bed8>Giveaway</color> <#666666>•</color> <#e6fff3><host> is giving away</color><newline><#666666>•</color> <item> <#8c8c8c>·</color> <#969696><seconds> sec.</color>",
+                    "<gradient:#ff7a18:#ffd166><bold>✦ Giveaway by <host> ✦</bold></gradient><newline><#fff3c4>Prize:</color> <item> <#ffcf70>• draw in <seconds> sec.</color>",
+                ),
+                "join-button" to VisualMigration(
+                    "<#666666>•</color> <#2bba43><bold>[Join]</bold></color>",
+                    "<gradient:#34d058:#7ee787><bold>▶ [Join now]</bold></gradient> <#ffe7a3>click to jump in</color>",
+                ),
+                "countdown-title" to VisualMigration("<#92bed8><seconds></color>", "<gradient:#ff5f1f:#ffd166><bold><seconds></bold></gradient>"),
+                "countdown-subtitle" to VisualMigration("<#969696>Until the draw</color>", "<#fff3c4><item> is almost yours — get ready!</color>"),
+                "drawing-title" to VisualMigration("<#92bed8>Selecting the winner</color>", "<gradient:#ff5f1f:#ffd166><bold>Picking the winner</bold></gradient>"),
+                "drawing-subtitle" to VisualMigration("<#e6fff3><candidate></color>", "<#fff3c4>✦ <candidate> ✦</color>"),
+                "winner-network" to VisualMigration(
+                    "<prefix> <#2bba43>Winner: <winner></color><newline><#666666>•</color> <#969696>Prize:</color> <item><newline><#666666>•</color> <#969696>Host: <host></color>",
+                    "<gradient:#34d058:#ffd166><bold>✦ Winner — <winner> ✦</bold></gradient><newline><#fff3c4>Prize:</color> <item><newline><#ffcf70>Hosted by <host></color>",
+                ),
+                "winner-title" to VisualMigration("<#2bba43>You won</color>", "<gradient:#34d058:#ffd166><bold>You won!</bold></gradient>"),
+            ),
+        )
     }
 }

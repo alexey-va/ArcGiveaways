@@ -4,7 +4,7 @@ giveaway:
   radius-blocks: 100.0
   open-seconds: 45
   drawing-seconds: 6
-  minimum-participants: 2
+  minimum-participants: 1
   maximum-participants: 250
   maximum-item-amount: 64
   host-cooldown-seconds: 300
@@ -14,6 +14,8 @@ cross-server:
   enabled: true
   transfer-on-click: true
   pending-join-seconds: 45
+  presence-heartbeat-seconds: 5
+  presence-lease-seconds: 20
   allowed-origins: [spawn, survival, parkour]
 
 redis:
@@ -21,6 +23,7 @@ redis:
 
 effects:
   bossbar: true
+  actionbar: true
   titles: true
   sounds: true
   particles: true

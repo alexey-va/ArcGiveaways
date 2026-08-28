@@ -12,6 +12,7 @@ import java.util.logging.Logger
 class RussianItemNames(
     private val catalogPath: Path,
     private val logger: Logger,
+    private val presentation: GiveawayPresentationPort = NativeGiveawayPresentationPort,
 ) {
     @Volatile
     private var translations: Map<String, String> = emptyMap()
@@ -33,7 +34,7 @@ class RussianItemNames(
     }
 
     fun displayName(item: ItemStack): Component {
-        val effectiveName = item.effectiveName()
+        val effectiveName = presentation.effectiveItemName(item)
         val meta = item.itemMeta
         return localize(
             effectiveName = effectiveName,

@@ -14,7 +14,7 @@ class GiveawayConfig(private val config: Config) {
     val radius: Double get() = config.double("giveaway.radius-blocks", 100.0)
     val openSeconds: Int get() = config.int("giveaway.open-seconds", 45)
     val drawingSeconds: Int get() = config.int("giveaway.drawing-seconds", 6)
-    val minimumParticipants: Int get() = config.int("giveaway.minimum-participants", 2)
+    val minimumParticipants: Int get() = config.int("giveaway.minimum-participants", 1)
     val maximumParticipants: Int get() = config.int("giveaway.maximum-participants", 250)
     val maximumItemAmount: Int get() = config.int("giveaway.maximum-item-amount", 64)
     val hostCooldownSeconds: Int get() = config.int("giveaway.host-cooldown-seconds", 300)
@@ -22,12 +22,15 @@ class GiveawayConfig(private val config: Config) {
     val crossServerEnabled: Boolean get() = config.bool("cross-server.enabled", true)
     val transferOnClick: Boolean get() = config.bool("cross-server.transfer-on-click", true)
     val pendingJoinSeconds: Int get() = config.int("cross-server.pending-join-seconds", 45)
+    val presenceHeartbeatSeconds: Int get() = config.int("cross-server.presence-heartbeat-seconds", 5)
+    val presenceLeaseSeconds: Int get() = config.int("cross-server.presence-lease-seconds", 20)
     val allowedOrigins: Set<String> get() = config.stringList(
         "cross-server.allowed-origins",
         listOf("spawn", "survival", "parkour"),
     ).map { BackendServerId.of(it.trim().lowercase()).value }.toSet()
     val importArcRedis: Boolean get() = config.bool("redis.import-arc-credentials", true)
     val bossBarEnabled: Boolean get() = config.bool("effects.bossbar", true)
+    val actionBarEnabled: Boolean get() = config.bool("effects.actionbar", true)
     val titlesEnabled: Boolean get() = config.bool("effects.titles", true)
     val soundsEnabled: Boolean get() = config.bool("effects.sounds", true)
     val particlesEnabled: Boolean get() = config.bool("effects.particles", true)
@@ -46,6 +49,10 @@ class GiveawayConfig(private val config: Config) {
         require(hostCooldownSeconds in 0..86_400) { "host-cooldown-seconds is outside the supported range" }
         require(terminalRetentionMinutes in 5..1440) { "terminal-retention-minutes must be between 5 and 1440" }
         require(pendingJoinSeconds in 5..300) { "pending-join-seconds must be between 5 and 300" }
+        require(presenceHeartbeatSeconds in 2..30) { "presence-heartbeat-seconds must be between 2 and 30" }
+        require(presenceLeaseSeconds in (presenceHeartbeatSeconds * 3)..120) {
+            "presence-lease-seconds must be at least three heartbeats and no more than 120"
+        }
         require(allowedOrigins.isNotEmpty() && serverId in allowedOrigins) {
             "cross-server.allowed-origins must include this server-id"
         }

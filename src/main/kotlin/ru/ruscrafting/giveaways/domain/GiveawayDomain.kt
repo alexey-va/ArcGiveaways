@@ -120,6 +120,9 @@ data class GiveawayRecord(
 
     fun isActive(): Boolean = status in ACTIVE_STATUSES
 
+    /** The host slot is needed only while this giveaway can still advance into a draw. */
+    fun reservesHost(): Boolean = status in HOST_RESERVING_STATUSES
+
     fun displayId(): String = id.substring(0, 8)
 
     companion object {
@@ -131,6 +134,11 @@ data class GiveawayRecord(
             GiveawayStatus.DRAWING,
             GiveawayStatus.AWAITING_DELIVERY,
             GiveawayStatus.AWAITING_REFUND,
+        )
+        private val HOST_RESERVING_STATUSES = setOf(
+            GiveawayStatus.PREPARING,
+            GiveawayStatus.OPEN,
+            GiveawayStatus.DRAWING,
         )
     }
 }

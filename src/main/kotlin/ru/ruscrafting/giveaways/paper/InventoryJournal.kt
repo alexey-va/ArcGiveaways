@@ -78,11 +78,14 @@ class InventoryPlan private constructor(val changes: List<SlotChange>) {
         }
     }
 
-    fun apply(player: Player): Boolean {
+    fun apply(
+        player: Player,
+        playerData: GiveawayPlayerDataPersistence = NativeGiveawayPlayerDataPersistence,
+    ): Boolean {
         if (state(player) != PlanState.BEFORE) return false
         changes.forEach { change -> player.inventory.setItem(change.slot, decode(change.afterBase64)) }
         player.updateInventory()
-        player.saveData()
+        playerData.persist(player)
         return state(player) == PlanState.AFTER
     }
 
@@ -159,10 +162,18 @@ internal object InventoryStackMatcher {
     }
 }
 
+interface InventoryJournalRepository {
+    fun write(record: InventoryJournalRecord): InventoryJournalRecord
+
+    fun acknowledgeExactly(record: InventoryJournalRecord): DurableAcknowledgementOutcome
+
+    fun loadAll(): List<InventoryJournalRecord>
+}
+
 class InventoryJournalStore(
     dataRoot: Path,
     private val gson: Gson = Gson(),
-) {
+) : InventoryJournalRepository {
     private val journal = DurableRecordJournal(
         root = dataRoot,
         relativeDirectory = Path.of("data/inventory-journals"),
@@ -176,17 +187,17 @@ class InventoryJournalStore(
         validate = InventoryJournalRecord::validated,
     )
 
-    fun write(record: InventoryJournalRecord): InventoryJournalRecord {
+    override fun write(record: InventoryJournalRecord): InventoryJournalRecord {
         val validated = record.validated()
         return journal.commit(recordId(validated.giveawayId, validated.kind), validated)
     }
 
-    fun acknowledgeExactly(record: InventoryJournalRecord): DurableAcknowledgementOutcome =
+    override fun acknowledgeExactly(record: InventoryJournalRecord): DurableAcknowledgementOutcome =
         journal.acknowledgeExactly(recordId(record.giveawayId, record.kind), record.validated()) { expected, current ->
             expected == current
         }
 
-    fun loadAll(): List<InventoryJournalRecord> = journal.loadAll().map { stored ->
+    override fun loadAll(): List<InventoryJournalRecord> = journal.loadAll().map { stored ->
         stored.value.also { record ->
             require(stored.recordId == recordId(record.giveawayId, record.kind)) {
                 "Inventory journal filename does not match its record identity"

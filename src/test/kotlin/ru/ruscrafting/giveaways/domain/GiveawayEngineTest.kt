@@ -46,6 +46,14 @@ class GiveawayEngineTest :
             result.terminalReason shouldBe "not_enough_participants"
         }
 
+        "host reservation ends when only delivery or refund recovery remains" {
+            giveaway(GiveawayStatus.PREPARING).reservesHost() shouldBe true
+            giveaway(GiveawayStatus.OPEN).reservesHost() shouldBe true
+            giveaway(GiveawayStatus.DRAWING).reservesHost() shouldBe true
+            giveaway(GiveawayStatus.AWAITING_REFUND).reservesHost() shouldBe false
+            giveaway(GiveawayStatus.CANCELLED).reservesHost() shouldBe false
+        }
+
         "item payload rejects corruption" {
             val payload = ItemPayload.capture("minecraft:diamond", 1, byteArrayOf(1, 2, 3))
             shouldThrow<IllegalArgumentException> { payload.copy(bytesBase64 = "AQIE").decodedBytes() }

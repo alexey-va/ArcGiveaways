@@ -11,17 +11,20 @@ import ru.arc.redis.safety.RedisHashConsumeResult
 import ru.arc.redis.safety.RedisHashDecision
 import ru.arc.redis.safety.RedisHashUpdateResult
 import ru.arc.redis.safety.RedisHashUpdater
+import ru.ruscrafting.giveaways.domain.GiveawayParticipant
 import ru.ruscrafting.giveaways.domain.GiveawayRecord
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicReference
 
-enum class GiveawayEventType { CREATED, UPDATED, TERMINAL, DELETED }
+enum class GiveawayEventType { CREATED, UPDATED, JOINED, TERMINAL, DELETED }
 
 data class GiveawayWireEvent(
     val protocolVersion: Int = 1,
     val type: GiveawayEventType,
     val giveawayId: String,
     val revision: Long,
+    val participant: GiveawayParticipant? = null,
 )
 
 data class PendingJoin(
@@ -67,28 +70,44 @@ class RedisGiveawayRepository(
     private val eventCodec = BoundedJsonCodec(
         gson = gson,
         type = GiveawayWireEvent::class.java,
-        rootContract = JsonObjectContract(EVENT_FIELDS),
+        rootContract = JsonObjectContract(
+            allowedFields = EVENT_FIELDS,
+            requiredFields = EVENT_FIELDS - "participant",
+        ),
         bounds = JsonResourceBounds(512, maxContainerEntries = 8, maxTotalNodes = 16),
         validate = ::validateEvent,
     )
     private val records = RedisHashUpdater(redis, RECORDS_KEY, recordCodec, MAX_CAS_ATTEMPTS)
     private val pending = RedisHashUpdater(redis, PENDING_KEY, pendingCodec, MAX_CAS_ATTEMPTS)
+    private val eventTopic = AtomicReference<ValidatedRedisTopic<GiveawayWireEvent>?>(null)
+    private val eventTopicLock = Any()
 
     fun openEvents(
         originAllowed: (String) -> Boolean,
         listener: (GiveawayWireEvent, String) -> Unit,
-    ): ValidatedRedisTopic<GiveawayWireEvent> = ValidatedRedisTopic.open(
-        redis = redis,
-        channel = EVENT_CHANNEL,
-        codec = eventCodec,
-        originAllowed = originAllowed,
-        replay = RedisReplayPolicy(
-            messageId = { event -> "${event.giveawayId}:${event.revision}:${event.type.name}" },
-            ttlMillis = EVENT_DEDUPLICATION_MS,
-            maxEntries = MAX_SEEN_EVENTS,
-        ),
-        onMessage = listener,
-    )
+    ): AutoCloseable = synchronized(eventTopicLock) {
+        check(eventTopic.get() == null) { "Giveaway event topic is already registered" }
+        val topic = ValidatedRedisTopic.open(
+            redis = redis,
+            channel = EVENT_CHANNEL,
+            codec = eventCodec,
+            originAllowed = originAllowed,
+            replay = RedisReplayPolicy(
+                messageId = { event ->
+                    "${event.giveawayId}:${event.revision}:${event.type.name}:${event.participant?.playerId.orEmpty()}"
+                },
+                 ttlMillis = EVENT_DEDUPLICATION_MS,
+                 maxEntries = MAX_SEEN_EVENTS,
+            ),
+            onMessage = listener,
+        )
+        eventTopic.set(topic)
+        AutoCloseable {
+            synchronized(eventTopicLock) {
+                if (eventTopic.compareAndSet(topic, null)) topic.close()
+            }
+         }
+     }
 
     fun create(record: GiveawayRecord): CompletableFuture<Boolean> {
         val validated = record.validated(maxParticipants)
@@ -121,6 +140,9 @@ class RedisGiveawayRepository(
                 val before = requireNotNull(result.before)
                 val after = requireNotNull(result.after)
                 publish(if (after.isActive()) GiveawayEventType.UPDATED else GiveawayEventType.TERMINAL, after)
+                val knownParticipants = before.participants.mapTo(mutableSetOf(), GiveawayParticipant::playerId)
+                after.participants.filter { knownParticipants.add(it.playerId) }
+                    .forEach { participant -> publish(GiveawayEventType.JOINED, after, participant) }
                 RepositoryUpdate.Changed(before, after)
             }
             is RedisHashUpdateResult.Rejected -> result.current?.let(RepositoryUpdate::Rejected) ?: RepositoryUpdate.Missing
@@ -141,6 +163,19 @@ class RedisGiveawayRepository(
     fun claimHost(hostId: String, giveawayId: String): CompletableFuture<Boolean> =
         redis.compareAndSetMapEntry(HOSTS_KEY, canonicalUuid(hostId, "host"), null, canonicalUuid(giveawayId, "giveaway"))
 
+    fun hostGiveawayId(hostId: String): CompletableFuture<String?> =
+        redis.loadMapEntries(HOSTS_KEY, canonicalUuid(hostId, "host")).thenApply { values ->
+            values.firstOrNull()?.let { canonicalUuid(it, "claimed giveaway") }
+        }
+
+    fun replaceHostClaim(hostId: String, expectedGiveawayId: String, giveawayId: String): CompletableFuture<Boolean> =
+        redis.compareAndSetMapEntry(
+            HOSTS_KEY,
+            canonicalUuid(hostId, "host"),
+            canonicalUuid(expectedGiveawayId, "expected giveaway"),
+            canonicalUuid(giveawayId, "giveaway"),
+        )
+
     fun releaseHost(hostId: String, giveawayId: String): CompletableFuture<Boolean> =
         redis.compareAndSetMapEntry(HOSTS_KEY, canonicalUuid(hostId, "host"), canonicalUuid(giveawayId, "giveaway"), null)
 
@@ -155,8 +190,18 @@ class RedisGiveawayRepository(
             }
         }
 
-    private fun publish(type: GiveawayEventType, record: GiveawayRecord) {
-        redis.publish(EVENT_CHANNEL, eventCodec.encode(GiveawayWireEvent(type = type, giveawayId = record.id, revision = record.revision)))
+    private fun publish(
+        type: GiveawayEventType,
+        record: GiveawayRecord,
+        participant: GiveawayParticipant? = null,
+    ) {
+        val event = GiveawayWireEvent(
+            type = type,
+            giveawayId = record.id,
+            revision = record.revision,
+            participant = participant,
+        )
+        eventTopic.get()?.publish(event) ?: redis.publish(EVENT_CHANNEL, eventCodec.encode(event))
     }
 
     private fun validatePending(value: PendingJoin) {
@@ -168,6 +213,8 @@ class RedisGiveawayRepository(
         require(value.protocolVersion == 1) { "Unsupported giveaway event protocol" }
         canonicalUuid(value.giveawayId, "event giveaway")
         require(value.revision >= 0L) { "Giveaway event revision is invalid" }
+        if (value.type == GiveawayEventType.JOINED) requireNotNull(value.participant).validated()
+        else require(value.participant == null) { "Only joined events may contain a participant" }
     }
 
     private fun canonicalUuid(value: String, label: String): String = value.also {
@@ -184,7 +231,7 @@ class RedisGiveawayRepository(
         private const val EVENT_DEDUPLICATION_MS = 10L * 60L * 1_000L
         private const val MAX_SEEN_EVENTS = 10_000
         private val PENDING_FIELDS = setOf("giveawayId", "expiresAtMs")
-        private val EVENT_FIELDS = setOf("protocolVersion", "type", "giveawayId", "revision")
+        private val EVENT_FIELDS = setOf("protocolVersion", "type", "giveawayId", "revision", "participant")
         private val RECORD_FIELDS = setOf(
             "protocolVersion", "id", "revision", "status", "hostId", "hostName", "serverId", "worldName",
             "anchorX", "anchorY", "anchorZ", "radius", "item", "createdAtMs", "opensAtMs", "drawAtMs",
