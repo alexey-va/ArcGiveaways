@@ -9,7 +9,6 @@ import org.bukkit.Bukkit
 import org.bukkit.Color
 import org.bukkit.FireworkEffect
 import org.bukkit.Location
-import org.bukkit.Particle
 import org.bukkit.entity.Firework
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
@@ -346,7 +345,11 @@ class GiveawayService(
                     else -> null
                 }?.takeIf { it.status == GiveawayStatus.OPEN }
                 if (opened != null) {
-                    cooldowns[player.uniqueId] = startedAtMs + settings.hostCooldownSeconds * 1_000L
+                    if (settings.hostCooldownSeconds > 0) {
+                        cooldowns[player.uniqueId] = startedAtMs + settings.hostCooldownSeconds * 1_000L
+                    } else {
+                        cooldowns.remove(player.uniqueId)
+                    }
                     acceptRecord(opened)
                     player.sendMessage(locale.render(MessageKey.STARTED, player, values("id", opened.displayId())))
                 } else {
@@ -851,7 +854,7 @@ class GiveawayService(
                 }
             }
             if (record.serverId == settings.serverId && settings.particlesEnabled && now % 2000L < 1000L) {
-                center(record).world.spawnParticle(Particle.END_ROD, center(record).add(0.0, 1.0, 0.0), 12, 1.2, 0.8, 1.2, 0.02)
+                presentation.spawnHostAura(hostCenter(record))
             }
         } else if (record.status == GiveawayStatus.DRAWING && record.drawingCandidates.isNotEmpty()) {
             val candidate = record.drawingCandidates[(now / 250L % record.drawingCandidates.size).toInt()].playerName
@@ -1119,6 +1122,13 @@ class GiveawayService(
         val world = Bukkit.getWorld(record.worldName) ?: Bukkit.getWorlds().first()
         return Location(world, record.anchorX, record.anchorY, record.anchorZ)
     }
+
+    private fun hostCenter(record: GiveawayRecord): Location =
+        runCatching { Bukkit.getPlayer(UUID.fromString(record.hostId)) }.getOrNull()
+            ?.takeIf(Player::isOnline)
+            ?.location
+            ?.clone()
+            ?: center(record)
 
     private fun participantPlayers(participants: List<GiveawayParticipant>): List<Player> = participants.mapNotNull { participant ->
         runCatching { Bukkit.getPlayer(UUID.fromString(participant.playerId)) }.getOrNull()?.takeIf(Player::isOnline)

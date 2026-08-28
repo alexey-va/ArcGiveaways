@@ -17,7 +17,7 @@ class GiveawayConfig(private val config: Config) {
     val minimumParticipants: Int get() = config.int("giveaway.minimum-participants", 1)
     val maximumParticipants: Int get() = config.int("giveaway.maximum-participants", 250)
     val maximumItemAmount: Int get() = config.int("giveaway.maximum-item-amount", 64)
-    val hostCooldownSeconds: Int get() = config.int("giveaway.host-cooldown-seconds", 300)
+    val hostCooldownSeconds: Int get() = config.int("giveaway.host-cooldown-seconds", 0)
     val terminalRetentionMinutes: Int get() = config.int("giveaway.terminal-retention-minutes", 30)
     val crossServerEnabled: Boolean get() = config.bool("cross-server.enabled", true)
     val transferOnClick: Boolean get() = config.bool("cross-server.transfer-on-click", true)

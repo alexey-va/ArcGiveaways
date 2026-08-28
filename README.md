@@ -30,4 +30,4 @@ a stale giveaway claim.
 The Redis/Testcontainers integration suite runs in CI; local development uses
 the unit and MockBukkit suite above.
 
-The deployable artifact is `build/libs/ArcGiveaways-0.1.6.jar`.
+The deployable artifact is `build/libs/ArcGiveaways-0.1.7.jar`.

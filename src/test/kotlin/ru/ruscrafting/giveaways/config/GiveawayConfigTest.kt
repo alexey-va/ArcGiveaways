@@ -22,11 +22,23 @@ class GiveawayConfigTest :
                 ConfigManager.clear()
                 GiveawayConfig.load(profile.parent).also { settings ->
                     settings.serverId shouldBe expected
+                    settings.hostCooldownSeconds shouldBe 0
                     settings.defaultLocale shouldBe "ru"
                     settings.useClientLocale shouldBe false
                 }
             }
             ConfigManager.clear()
+        }
+
+        "host cooldown is disabled when the setting is omitted" {
+            val root = Files.createTempDirectory("arcgiveaways-default-cooldown-")
+            try {
+                ConfigManager.clear()
+                GiveawayConfig.load(root).hostCooldownSeconds shouldBe 0
+            } finally {
+                ConfigManager.clear()
+                root.toFile().deleteRecursively()
+            }
         }
 
         "Redis bootstrap heals a persisted node identity without changing its connection" {

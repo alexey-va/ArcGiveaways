@@ -3,6 +3,7 @@ package ru.ruscrafting.giveaways.paper
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.title.Title
 import org.bukkit.Location
+import org.bukkit.Particle
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import java.util.concurrent.CompletableFuture
@@ -14,6 +15,8 @@ interface GiveawayPresentationPort {
     fun decorateItemHover(name: Component, item: ItemStack): Component
 
     fun showTitle(player: Player, title: Title)
+
+    fun spawnHostAura(center: Location)
 }
 
 /** Native Paper adapter. Its exact calls can move to Core without changing giveaway behavior. */
@@ -24,6 +27,18 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         name.hoverEvent(item.asHoverEvent())
 
     override fun showTitle(player: Player, title: Title) = player.showTitle(title)
+
+    override fun spawnHostAura(center: Location) {
+        center.world.spawnParticle(
+            Particle.END_ROD,
+            center.clone().add(0.0, 1.0, 0.0),
+            12,
+            1.2,
+            0.8,
+            1.2,
+            0.02,
+        )
+    }
 }
 
 /** Owns only giveaway arrival selection and the local Paper teleport request. */

@@ -7,7 +7,7 @@ giveaway:
   minimum-participants: 1
   maximum-participants: 250
   maximum-item-amount: 64
-  host-cooldown-seconds: 300
+  host-cooldown-seconds: 0
   terminal-retention-minutes: 30
 
 cross-server:

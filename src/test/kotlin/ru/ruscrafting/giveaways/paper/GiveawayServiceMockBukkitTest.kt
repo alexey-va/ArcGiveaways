@@ -5,6 +5,7 @@ import io.kotest.matchers.shouldBe
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import net.kyori.adventure.title.Title
+import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.entity.Player
 import org.bukkit.event.player.PlayerSwapHandItemsEvent
@@ -101,6 +102,26 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             }
             fixture.titles().none { it.playerId == observer.uniqueId || it.playerId == host.uniqueId } shouldBe true
             (bossBar.progress() in 0.49f..0.51f) shouldBe true
+        }
+    }
+
+    test("particle aura follows the giveaway host after they move") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            val record = fixture.openRecord(host)
+            fixture.repository.create(record).join() shouldBe true
+            fixture.start()
+            fixture.await("seeded giveaway to reconcile") { fixture.service.activeRecords().singleOrNull()?.id == record.id }
+            fixture.drainParticleLocations()
+
+            host.teleport(host.location.clone().add(12.0, 0.0, -7.0)) shouldBe true
+            fixture.paper.performTicks(20)
+
+            val aura = fixture.drainParticleLocations().last()
+            aura.world shouldBe host.world
+            aura.x shouldBe host.location.x
+            aura.y shouldBe host.location.y
+            aura.z shouldBe host.location.z
         }
     }
 
@@ -392,6 +413,8 @@ private class GiveawayPaperFixture : AutoCloseable {
 
     fun titles(): List<ShownTitle> = presentation.titles()
 
+    fun drainParticleLocations(): List<Location> = presentation.drainParticleLocations()
+
     override fun close() {
         runCatching(service::close)
         Tasks.reset()
@@ -444,6 +467,7 @@ private data class ShownTitle(val playerId: UUID, val title: Title)
 
 private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
     private val shownTitles = mutableListOf<ShownTitle>()
+    private val particleLocations = mutableListOf<Location>()
 
     override fun effectiveItemName(item: ItemStack): Component = Component.translatable(item.translationKey())
 
@@ -453,7 +477,13 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
         shownTitles += ShownTitle(player.uniqueId, title)
     }
 
+    override fun spawnHostAura(center: Location) {
+        particleLocations += center.clone()
+    }
+
     fun titles(): List<ShownTitle> = shownTitles.toList()
+
+    fun drainParticleLocations(): List<Location> = particleLocations.toList().also { particleLocations.clear() }
 }
 
 private object ImmediateGiveawayTravelPort : GiveawayTravelPort {
@@ -497,7 +527,7 @@ private fun writeFixtureConfig(root: Path) {
           actionbar: true
           titles: true
           sounds: false
-          particles: false
+          particles: true
           fireworks: false
         locale:
           default: ru
