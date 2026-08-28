@@ -56,6 +56,8 @@ class GiveawayCommand(
             }
             "join" -> args.getOrNull(1)?.let { service.join(player, it) }
                 ?: player.sendMessage(locale.render(MessageKey.HELP, player))
+            "follow", "tp" -> args.getOrNull(1)?.let { service.follow(player, it) }
+                ?: player.sendMessage(locale.render(MessageKey.HELP, player))
             "status", "list" -> service.sendStatus(player)
             "cancel" -> service.cancel(player, args.getOrNull(1))
             "claim" -> service.claim(player)
@@ -67,12 +69,15 @@ class GiveawayCommand(
     override fun onTabComplete(sender: CommandSender, command: Command, alias: String, args: Array<out String>): List<String> {
         if (args.size == 1) {
             val available = buildList {
-                addAll(listOf("start", "join", "status", "cancel", "claim"))
+                addAll(listOf("start", "join", "follow", "status", "cancel", "claim"))
                 if (sender.hasPermission("arcgiveaways.admin")) addAll(listOf("reload", "qa"))
             }
             return available.filter { it.startsWith(args[0], ignoreCase = true) }
         }
         if (args.size == 2 && args[0].equals("join", true)) {
+            return service.activeRecords().map { it.displayId() }.filter { it.startsWith(args[1], true) }
+        }
+        if (args.size == 2 && (args[0].equals("follow", true) || args[0].equals("tp", true))) {
             return service.activeRecords().map { it.displayId() }.filter { it.startsWith(args[1], true) }
         }
         if (args.size == 2 && args[0].equals("qa", true) && sender.hasPermission("arcgiveaways.admin")) {

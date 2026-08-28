@@ -54,6 +54,22 @@ class GiveawayEngineTest :
             giveaway(GiveawayStatus.CANCELLED).reservesHost() shouldBe false
         }
 
+        "cancelling a handoff clears its transient timing" {
+            val handingOff = giveaway().copy(
+                hostHandoffStartedAtMs = 10_000,
+                hostHandoffUntilMs = 55_000,
+            ).validated()
+
+            val cancelled = engine.cancel(handingOff, 55_000, "host_handoff_timeout").validated()
+
+            cancelled.status shouldBe GiveawayStatus.AWAITING_REFUND
+            cancelled.hostHandoffStartedAtMs shouldBe null
+            cancelled.hostHandoffUntilMs shouldBe null
+            shouldThrow<IllegalArgumentException> {
+                cancelled.copy(hostHandoffStartedAtMs = 10_000, hostHandoffUntilMs = 55_000).validated()
+            }
+        }
+
         "item payload rejects corruption" {
             val payload = ItemPayload.capture("minecraft:diamond", 1, byteArrayOf(1, 2, 3))
             shouldThrow<IllegalArgumentException> { payload.copy(bytesBase64 = "AQIE").decodedBytes() }

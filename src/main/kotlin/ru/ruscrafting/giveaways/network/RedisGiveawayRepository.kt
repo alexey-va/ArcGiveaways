@@ -235,10 +235,10 @@ class RedisGiveawayRepository(
         private val RECORD_FIELDS = setOf(
             "protocolVersion", "id", "revision", "status", "hostId", "hostName", "serverId", "worldName",
             "anchorX", "anchorY", "anchorZ", "radius", "item", "createdAtMs", "opensAtMs", "drawAtMs",
-            "drawingEndsAtMs", "terminalAtMs", "participants", "drawingCandidates", "winner", "terminalReason",
+            "hostHandoffStartedAtMs", "hostHandoffUntilMs", "drawingEndsAtMs", "terminalAtMs", "participants", "drawingCandidates", "winner", "terminalReason",
         )
         private val RECORD_REQUIRED_FIELDS = RECORD_FIELDS - setOf(
-            "drawingEndsAtMs", "terminalAtMs", "winner", "terminalReason",
+            "hostHandoffStartedAtMs", "hostHandoffUntilMs", "drawingEndsAtMs", "terminalAtMs", "winner", "terminalReason",
         )
     }
 }

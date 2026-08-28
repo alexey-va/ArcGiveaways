@@ -9,13 +9,18 @@ Active giveaways show a warm network-wide bossbar. Registered participants get
 an actionbar countdown and a title for the final five seconds; each successful
 join is announced across every backend. Backend presence uses expiring Redis
 leases, so a stopped host backend cannot leave a player permanently blocked by
-a stale giveaway claim.
+a stale giveaway claim. When the host changes backends, the giveaway and its
+countdown pause during transit, migrate to the new backend, and give every
+registered participant an urgent one-click route back to the host.
 
 ## Commands
 
-- `/giveaway start [amount]` — start a giveaway with the held item.
+- `/giveaway start [amount]` — start a giveaway with the held item; requires
+  `arcgiveaways.start`, granted from the `burgher` progression rank upward.
 - `/giveaway join <id>` — move to the host backend when needed, teleport beside
   the host, and join the giveaway.
+- `/giveaway follow <id>` — preserve an existing entry while moving to the
+  host's new backend and location.
 - `/giveaway status` — show active giveaways.
 - `/giveaway cancel [id]` — cancel your giveaway and queue a safe refund.
 - `/giveaway claim` — retry a pending prize or refund after freeing inventory.

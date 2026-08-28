@@ -79,6 +79,8 @@ data class GiveawayRecord(
     val createdAtMs: Long,
     val opensAtMs: Long,
     val drawAtMs: Long,
+    val hostHandoffStartedAtMs: Long? = null,
+    val hostHandoffUntilMs: Long? = null,
     val drawingEndsAtMs: Long? = null,
     val terminalAtMs: Long? = null,
     val participants: List<GiveawayParticipant> = emptyList(),
@@ -97,6 +99,15 @@ data class GiveawayRecord(
         require(listOf(anchorX, anchorY, anchorZ, radius).all(Double::isFinite)) { "Invalid giveaway location" }
         require(radius in 1.0..1000.0) { "Invalid giveaway radius" }
         require(createdAtMs > 0 && opensAtMs >= createdAtMs && drawAtMs > opensAtMs) { "Invalid giveaway timing" }
+        require((hostHandoffStartedAtMs == null) == (hostHandoffUntilMs == null)) { "Incomplete host handoff timing" }
+        if (hostHandoffStartedAtMs != null && hostHandoffUntilMs != null) {
+            require(hostHandoffStartedAtMs >= createdAtMs && hostHandoffUntilMs > hostHandoffStartedAtMs) {
+                "Invalid host handoff timing"
+            }
+            require(status == GiveawayStatus.OPEN || status == GiveawayStatus.DRAWING) {
+                "Host handoff is only valid while a giveaway is running"
+            }
+        }
         require(participants.size <= maxParticipants.coerceIn(1, MAX_PARTICIPANTS)) { "Too many participants" }
         participants.forEach(GiveawayParticipant::validated)
         drawingCandidates.forEach(GiveawayParticipant::validated)
@@ -206,6 +217,8 @@ class GiveawayEngine(
         require(record.isActive() && record.status != GiveawayStatus.AWAITING_DELIVERY)
         return record.copy(
             status = GiveawayStatus.AWAITING_REFUND,
+            hostHandoffStartedAtMs = null,
+            hostHandoffUntilMs = null,
             terminalAtMs = nowMs,
             terminalReason = reason.take(96),
         )

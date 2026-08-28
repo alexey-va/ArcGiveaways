@@ -418,6 +418,7 @@ class GiveawayService(
 
     fun onPlayerJoin(player: Player) {
         lifecycleTasks.runLater(40) {
+            adoptHostedGiveaway(player)
             repository.consumePendingJoin(player.uniqueId.toString(), clockMs()).onMain(
                 success = { pending -> if (pending != null) joinTransferred(player, pending.giveawayId) },
                 failure = { plugin.logger.warning("Could not consume pending giveaway join for ${player.uniqueId}") },
@@ -434,11 +435,90 @@ class GiveawayService(
                 (it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING)
         }.forEach { record ->
             repository.update(record.id) { current ->
-                if (current.status == GiveawayStatus.OPEN || current.status == GiveawayStatus.DRAWING) {
-                    engine.cancel(current, clockMs(), "host_disconnected")
+                if (current.serverId == settings.serverId &&
+                    (current.status == GiveawayStatus.OPEN || current.status == GiveawayStatus.DRAWING)
+                ) {
+                    val handoffStartedAtMs = clockMs()
+                    current.copy(
+                        hostHandoffStartedAtMs = handoffStartedAtMs,
+                        hostHandoffUntilMs = handoffStartedAtMs + settings.hostHandoffSeconds * 1_000L,
+                    )
                 } else null
-            }
+            }.onMain(
+                success = { result ->
+                    when (result) {
+                        is RepositoryUpdate.Changed -> result.after
+                        is RepositoryUpdate.Rejected -> result.current
+                        else -> null
+                    }?.let(::acceptRecord)
+                },
+                failure = { plugin.logger.warning("Could not begin host handoff for giveaway ${record.id}: ${it.message}") },
+            )
         }
+    }
+
+    private fun adoptHostedGiveaway(player: Player) {
+        val playerId = player.uniqueId.toString()
+        repository.hostGiveawayId(playerId).onMain(
+            success = { giveawayId ->
+                if (giveawayId == null || !player.isOnline) return@onMain
+                val destination = player.location.clone()
+                val arrivedAtMs = clockMs()
+                repository.update(giveawayId) { current ->
+                    if (current.hostId != playerId || !current.reservesHost()) return@update null
+                    if (current.serverId == settings.serverId && current.hostHandoffUntilMs == null) return@update null
+                    val pausedMillis = current.hostHandoffStartedAtMs
+                        ?.let { startedAtMs -> (arrivedAtMs - startedAtMs).coerceAtLeast(0L) }
+                        ?: 0L
+                    current.copy(
+                        serverId = settings.serverId,
+                        worldName = destination.world.name,
+                        anchorX = destination.x,
+                        anchorY = destination.y,
+                        anchorZ = destination.z,
+                        drawAtMs = current.drawAtMs + pausedMillis,
+                        drawingEndsAtMs = current.drawingEndsAtMs?.plus(pausedMillis),
+                        hostHandoffStartedAtMs = null,
+                        hostHandoffUntilMs = null,
+                    )
+                }.onMain(
+                    success = { result ->
+                        when (result) {
+                            is RepositoryUpdate.Changed -> result.after
+                            is RepositoryUpdate.Rejected -> result.current
+                            else -> null
+                        }?.let(::acceptRecord)
+                    },
+                    failure = {
+                        plugin.logger.warning("Could not adopt hosted giveaway $giveawayId on ${settings.serverId}: ${it.message}")
+                    },
+                )
+            },
+            failure = { plugin.logger.warning("Could not inspect hosted giveaway for $playerId: ${it.message}") },
+        )
+    }
+
+    fun follow(player: Player, idOrPrefix: String) {
+        val id = resolveId(idOrPrefix)
+        if (id == null) {
+            player.sendMessage(locale.render(MessageKey.NOT_FOUND, player))
+            return
+        }
+        repository.load(id).onMain(
+            success = { record ->
+                if (record == null || record.status !in setOf(GiveawayStatus.OPEN, GiveawayStatus.DRAWING)) {
+                    player.sendMessage(locale.render(if (record == null) MessageKey.NOT_FOUND else MessageKey.NOT_OPEN, player))
+                    return@onMain
+                }
+                if (record.participants.none { it.playerId == player.uniqueId.toString() }) {
+                    player.sendMessage(locale.render(MessageKey.FOLLOW_DENIED, player))
+                    return@onMain
+                }
+                if (record.serverId != settings.serverId) transferForJoin(player, record)
+                else teleportAndJoin(player, record)
+            },
+            failure = { player.sendMessage(locale.render(MessageKey.REDIS_UNAVAILABLE, player)) },
+        )
     }
 
     fun cancel(player: Player, idOrPrefix: String?) {
@@ -501,8 +581,8 @@ class GiveawayService(
             return
         }
         val hostLocation = host.location
-        if (player.world.name != record.worldName || hostLocation.world != player.world) {
-            player.sendMessage(locale.render(MessageKey.WRONG_WORLD, player, values("world", record.worldName)))
+        if (hostLocation.world != player.world) {
+            player.sendMessage(locale.render(MessageKey.WRONG_WORLD, player, values("world", host.world.name)))
             return
         }
         if (player.location.distanceSquared(hostLocation) > record.radius * record.radius) {
@@ -544,7 +624,10 @@ class GiveawayService(
     private fun joinTransferred(player: Player, giveawayId: String) {
         repository.load(giveawayId).onMain(
             success = { record ->
-                if (record == null || record.status != GiveawayStatus.OPEN || record.serverId != settings.serverId) {
+                val alreadyJoined = record?.participants?.any { it.playerId == player.uniqueId.toString() } == true
+                val canArrive = record?.status == GiveawayStatus.OPEN ||
+                    (record?.status == GiveawayStatus.DRAWING && alreadyJoined)
+                if (record == null || !canArrive || record.serverId != settings.serverId) {
                     player.sendMessage(locale.render(if (record == null) MessageKey.NOT_FOUND else MessageKey.NOT_OPEN, player))
                     return@onMain
                 }
@@ -560,14 +643,20 @@ class GiveawayService(
             return
         }
         val host = runCatching { Bukkit.getPlayer(UUID.fromString(record.hostId)) }.getOrNull()
-            ?.takeIf { it.isOnline && it.world.name == record.worldName }
+            ?.takeIf(Player::isOnline)
         if (host == null) {
             player.sendMessage(locale.render(MessageKey.NOT_OPEN, player))
             return
         }
         travel.teleport(player, travel.arrivalNear(host)).onMain(
             success = { teleported ->
-                if (teleported && player.isOnline) joinLocal(player, record)
+                if (teleported && player.isOnline) {
+                    if (record.participants.any { it.playerId == player.uniqueId.toString() }) {
+                        player.sendMessage(locale.render(MessageKey.FOLLOW_ARRIVED, player))
+                    } else {
+                        joinLocal(player, record)
+                    }
+                }
                 else player.sendMessage(locale.render(MessageKey.TELEPORT_FAILED, player))
             },
             failure = {
@@ -600,8 +689,11 @@ class GiveawayService(
         cache.values.toList().forEach { record ->
             when {
                 record.serverId == settings.serverId && record.status == GiveawayStatus.PREPARING -> recoverPreparing(record)
-                record.serverId == settings.serverId && record.status == GiveawayStatus.OPEN && now >= record.drawAtMs -> beginDraw(record)
-                record.serverId == settings.serverId && record.status == GiveawayStatus.DRAWING && now >= (record.drawingEndsAtMs ?: Long.MAX_VALUE) -> selectWinner(record)
+                record.serverId == settings.serverId && record.hostHandoffUntilMs != null && now >= record.hostHandoffUntilMs -> expireHostHandoff(record)
+                record.serverId == settings.serverId && record.status == GiveawayStatus.OPEN &&
+                    record.hostHandoffUntilMs == null && now >= record.drawAtMs -> beginDraw(record)
+                record.serverId == settings.serverId && record.status == GiveawayStatus.DRAWING &&
+                    record.hostHandoffUntilMs == null && now >= (record.drawingEndsAtMs ?: Long.MAX_VALUE) -> selectWinner(record)
                 record.serverId == settings.serverId && record.status in setOf(GiveawayStatus.AWAITING_DELIVERY, GiveawayStatus.AWAITING_REFUND) -> attemptPending(record)
             }
             if (record.status in setOf(GiveawayStatus.OPEN, GiveawayStatus.DRAWING)) {
@@ -616,7 +708,7 @@ class GiveawayService(
     private fun beginDraw(record: GiveawayRecord) {
         val eligible = eligibleParticipants(record)
         repository.update(record.id) { current ->
-            if (current.status == GiveawayStatus.OPEN && clockMs() >= current.drawAtMs) {
+            if (current.status == GiveawayStatus.OPEN && current.hostHandoffUntilMs == null && clockMs() >= current.drawAtMs) {
                 engine.beginDraw(current, eligible, clockMs(), settings.drawingSeconds * 1000L)
             } else null
         }.onMain(
@@ -632,9 +724,29 @@ class GiveawayService(
         )
     }
 
+    private fun expireHostHandoff(record: GiveawayRecord) {
+        repository.update(record.id) { current ->
+            val deadline = current.hostHandoffUntilMs
+            if (current.serverId == settings.serverId && deadline != null && clockMs() >= deadline &&
+                (current.status == GiveawayStatus.OPEN || current.status == GiveawayStatus.DRAWING)
+            ) {
+                engine.cancel(current, clockMs(), "host_handoff_timeout")
+            } else null
+        }.onMain(
+            success = { result ->
+                val changed = (result as? RepositoryUpdate.Changed)?.after ?: return@onMain
+                acceptRecord(changed)
+                attemptPending(changed)
+            },
+            failure = { plugin.logger.warning("Could not expire host handoff for giveaway ${record.id}: ${it.message}") },
+        )
+    }
+
     private fun selectWinner(record: GiveawayRecord) {
         repository.update(record.id) { current ->
-            if (current.status == GiveawayStatus.DRAWING && clockMs() >= (current.drawingEndsAtMs ?: Long.MAX_VALUE)) engine.selectWinner(current) else null
+            if (current.status == GiveawayStatus.DRAWING && current.hostHandoffUntilMs == null &&
+                clockMs() >= (current.drawingEndsAtMs ?: Long.MAX_VALUE)
+            ) engine.selectWinner(current) else null
         }.onMain(
             success = { result -> (result as? RepositoryUpdate.Changed)?.after?.let { acceptRecord(it); attemptPending(it) } },
             failure = { plugin.logger.warning("Could not select giveaway winner ${record.id}: ${it.message}") },
@@ -881,6 +993,9 @@ class GiveawayService(
             announced += record.id
             announce(record)
         }
+        if (previous != null && previous.serverId != record.serverId && record.status == GiveawayStatus.OPEN) {
+            announceHostMoved(record)
+        }
         if (record.status == GiveawayStatus.AWAITING_DELIVERY && record.winner != null && record.id !in winnerAnnounced) {
             winnerAnnounced += record.id
             announceWinner(record)
@@ -929,6 +1044,31 @@ class GiveawayService(
                 "count", record.participants.size,
             )))
             play(player, "minecraft:block.note_block.chime", 0.45f, 1.35f)
+        }
+    }
+
+    private fun announceHostMoved(record: GiveawayRecord) {
+        participantPlayers(record.participants).forEach { player ->
+            val replacements = values(
+                "host", record.hostName,
+                "server", locale.serverName(record.serverId, player),
+            )
+            val body = locale.render(MessageKey.HOST_MOVED, player, replacements)
+            val button = locale.render(MessageKey.FOLLOW_BUTTON, player)
+                .clickEvent(ClickEvent.runCommand("/giveaway follow ${record.id}"))
+                .hoverEvent(HoverEvent.showText(locale.render(MessageKey.FOLLOW_HOVER, player, replacements)))
+            player.sendMessage(GiveawayPresentation.chatAnnouncement(body, button))
+            if (settings.actionBarEnabled) {
+                player.sendActionBar(locale.render(MessageKey.HOST_MOVED_ACTIONBAR, player, replacements))
+            }
+            if (settings.titlesEnabled) {
+                presentation.showTitle(player, Title.title(
+                    locale.render(MessageKey.HOST_MOVED_TITLE, player, replacements),
+                    locale.render(MessageKey.HOST_MOVED_SUBTITLE, player, replacements),
+                    Title.Times.times(Duration.ofMillis(150), Duration.ofSeconds(2), Duration.ofMillis(350)),
+                ))
+            }
+            play(player, "minecraft:block.note_block.bell", 1f, 1.25f)
         }
     }
 

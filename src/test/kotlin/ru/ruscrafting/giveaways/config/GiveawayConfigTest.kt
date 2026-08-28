@@ -23,6 +23,7 @@ class GiveawayConfigTest :
                 GiveawayConfig.load(profile.parent).also { settings ->
                     settings.serverId shouldBe expected
                     settings.hostCooldownSeconds shouldBe 0
+                    settings.hostHandoffSeconds shouldBe 45
                     settings.defaultLocale shouldBe "ru"
                     settings.useClientLocale shouldBe false
                 }
@@ -39,6 +40,14 @@ class GiveawayConfigTest :
                 ConfigManager.clear()
                 root.toFile().deleteRecursively()
             }
+        }
+
+        "starting giveaways is deny-by-default and owned by LuckPerms" {
+            val descriptor = requireNotNull(javaClass.getResourceAsStream("/plugin.yml"))
+                .bufferedReader()
+                .use { it.readText() }
+
+            Regex("arcgiveaways\\.start:\\s*\\n\\s*default: false").containsMatchIn(descriptor) shouldBe true
         }
 
         "Redis bootstrap heals a persisted node identity without changing its connection" {

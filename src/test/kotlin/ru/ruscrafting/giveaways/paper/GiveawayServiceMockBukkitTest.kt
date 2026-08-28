@@ -201,6 +201,8 @@ class GiveawayServiceMockBukkitTest : FunSpec({
     test("a dead remote backend lease is cancelled and no longer blocks a new giveaway") {
         withGiveawayFixture { fixture ->
             val host = fixture.player("Host")
+            fixture.start()
+            fixture.paper.performTicks(60)
             val stale = fixture.openRecord(host, serverId = "survival")
             fixture.repository.create(stale).join() shouldBe true
             fixture.repository.claimHost(host.uniqueId.toString(), stale.id).join() shouldBe true
@@ -212,7 +214,6 @@ class GiveawayServiceMockBukkitTest : FunSpec({
                 clockMs = { fixture.nowMs },
             )
             remoteDirectory.heartbeat().join()
-            fixture.start()
             fixture.paper.performTicks(20)
             repeat(4) {
                 fixture.nowMs += 2_000L
@@ -283,7 +284,7 @@ class GiveawayServiceMockBukkitTest : FunSpec({
         }
     }
 
-    test("a real PlayerQuitEvent cancels the host giveaway and releases its network claim") {
+    test("a host quit opens a durable handoff window instead of cancelling the giveaway") {
         withGiveawayFixture { fixture ->
             val host = fixture.player("Host")
             host.inventory.setItemInMainHand(ItemStack.of(Material.DIAMOND, 1))
@@ -294,13 +295,77 @@ class GiveawayServiceMockBukkitTest : FunSpec({
 
             host.disconnect() shouldBe true
 
-            fixture.await("quit cancellation") {
+            fixture.await("host handoff window") {
+                fixture.repository.load(id).join()?.hostHandoffUntilMs != null
+            }
+            val handingOff = requireNotNull(fixture.repository.load(id).join())
+            handingOff.status shouldBe GiveawayStatus.OPEN
+            handingOff.hostHandoffStartedAtMs shouldBe fixture.nowMs
+            handingOff.hostHandoffUntilMs shouldBe fixture.nowMs + 45_000L
+            fixture.repository.hostGiveawayId(host.uniqueId.toString()).join() shouldBe id
+
+            fixture.nowMs = requireNotNull(handingOff.hostHandoffUntilMs)
+            fixture.await("expired handoff refund") {
                 fixture.repository.load(id).join()?.status == GiveawayStatus.AWAITING_REFUND
             }
-            requireNotNull(fixture.repository.load(id).join()).terminalReason shouldBe "host_disconnected"
+            requireNotNull(fixture.repository.load(id).join()).terminalReason shouldBe "host_handoff_timeout"
             fixture.await("host claim release") {
                 fixture.repository.hostGiveawayId(host.uniqueId.toString()).join() == null
             }
+        }
+    }
+
+    test("joining another backend adopts the hosted giveaway and gives participants an urgent follow action") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            val participant = fixture.player("Guest")
+            val remote = fixture.openRecord(host, listOf(participant), serverId = "survival")
+                .copy(
+                    hostHandoffStartedAtMs = fixture.nowMs,
+                    hostHandoffUntilMs = fixture.nowMs + 45_000L,
+                )
+                .validated()
+            fixture.repository.create(remote).join() shouldBe true
+            fixture.repository.claimHost(host.uniqueId.toString(), remote.id).join() shouldBe true
+            fixture.start()
+            fixture.await("remote giveaway to reconcile") { fixture.service.activeRecords().singleOrNull()?.id == remote.id }
+            fixture.drainMessages(participant::nextComponentMessage)
+
+            host.teleport(host.location.clone().add(9.0, 0.0, 4.0)) shouldBe true
+            fixture.nowMs += 5_000L
+            fixture.service.onPlayerJoin(host)
+            fixture.await("hosted giveaway to migrate to spawn") {
+                fixture.repository.load(remote.id).join()?.let {
+                    it.serverId == "spawn" && it.hostHandoffUntilMs == null
+                } == true
+            }
+
+            val migrated = requireNotNull(fixture.repository.load(remote.id).join())
+            migrated.status shouldBe GiveawayStatus.OPEN
+            migrated.anchorX shouldBe host.location.x
+            migrated.anchorY shouldBe host.location.y
+            migrated.anchorZ shouldBe host.location.z
+            migrated.drawAtMs shouldBe remote.drawAtMs + 5_000L
+            val urgent = fixture.drainComponents(participant::nextComponentMessage)
+                .single { "Ведущий Host сменил сервер" in fixture.plain(it) }
+            ("[Срочно к ведущему]" in fixture.plain(urgent)) shouldBe true
+            urgent.runCommands() shouldBe listOf("/giveaway follow ${remote.id}")
+            fixture.titles().any { shown ->
+                shown.playerId == participant.uniqueId && "Ведущий сменил сервер" in fixture.plain(shown.title.title())
+            } shouldBe true
+
+            participant.teleport(host.location.clone().add(40.0, 0.0, 0.0)) shouldBe true
+            fixture.service.follow(participant, remote.id)
+            fixture.await("participant to follow the migrated host") {
+                participant.location.distanceSquared(host.location) < 0.01
+            }
+            val followMessages = mutableListOf<String>()
+            fixture.await("follow confirmation") {
+                followMessages += fixture.drainMessages(participant::nextComponentMessage)
+                followMessages.any { "Участие сохранено" in it }
+            }
+            requireNotNull(fixture.repository.load(remote.id).join()).participants.single().playerId shouldBe
+                participant.uniqueId.toString()
         }
     }
 })
@@ -409,6 +474,13 @@ private class GiveawayPaperFixture : AutoCloseable {
         }
     }
 
+    fun drainComponents(nextMessage: () -> Component?): List<Component> = buildList {
+        while (true) {
+            val message = nextMessage() ?: break
+            add(message)
+        }
+    }
+
     fun plain(component: Component): String = serializer.serialize(component)
 
     fun titles(): List<ShownTitle> = presentation.titles()
@@ -493,6 +565,13 @@ private object ImmediateGiveawayTravelPort : GiveawayTravelPort {
         CompletableFuture.completedFuture(player.teleport(destination))
 }
 
+@Suppress("DEPRECATION")
+private fun Component.runCommands(): List<String> = buildList {
+    clickEvent()?.takeIf { it.action() == net.kyori.adventure.text.event.ClickEvent.Action.RUN_COMMAND }
+        ?.let { add(it.value()) }
+    children().forEach { addAll(it.runCommands()) }
+}
+
 private fun writeFixtureConfig(root: Path) {
     Files.createDirectories(root.resolve("lang"))
     listOf("ru", "en").forEach { language ->
@@ -517,6 +596,7 @@ private fun writeFixtureConfig(root: Path) {
           enabled: true
           transfer-on-click: true
           pending-join-seconds: 10
+          host-handoff-seconds: 45
           presence-heartbeat-seconds: 2
           presence-lease-seconds: 6
           allowed-origins: [spawn, survival, parkour]

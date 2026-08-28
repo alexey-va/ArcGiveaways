@@ -13,6 +13,6 @@ permissions:
   arcgiveaways.use:
     default: true
   arcgiveaways.start:
-    default: true
+    default: false
   arcgiveaways.admin:
     default: op
