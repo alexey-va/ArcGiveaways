@@ -380,8 +380,12 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             migrated.anchorY shouldBe host.location.y
             migrated.anchorZ shouldBe host.location.z
             migrated.drawAtMs shouldBe remote.drawAtMs + 5_000L
-            val urgent = fixture.drainComponents(participant::nextComponentMessage)
-                .single { "Ведущий Host сменил сервер" in fixture.plain(it) }
+            val urgentMessages = mutableListOf<Component>()
+            fixture.await("urgent follow announcement") {
+                urgentMessages += fixture.drainComponents(participant::nextComponentMessage)
+                urgentMessages.any { "Ведущий Host сменил сервер" in fixture.plain(it) }
+            }
+            val urgent = urgentMessages.single { "Ведущий Host сменил сервер" in fixture.plain(it) }
             ("[Срочно к ведущему]" in fixture.plain(urgent)) shouldBe true
             urgent.runCommands() shouldBe listOf("/giveaway follow ${remote.id}")
             fixture.titles().any { shown ->
