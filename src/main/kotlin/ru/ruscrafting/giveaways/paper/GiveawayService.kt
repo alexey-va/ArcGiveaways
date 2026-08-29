@@ -41,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 class GiveawayService(
     private val plugin: JavaPlugin,
@@ -74,6 +75,7 @@ class GiveawayService(
     private val visualPulseAt = mutableMapOf<String, Long>()
     private val visualFireworkAt = mutableMapOf<String, Long>()
     private val visualFireworkVariant = mutableMapOf<String, Int>()
+    private val originalGlow = mutableMapOf<UUID, Boolean>()
     private val claimNoticeAt = mutableMapOf<UUID, Long>()
     private val pvpNoticeAt = mutableMapOf<UUID, Long>()
     private val recoveryIncidents = InventoryRecoveryIncidentTracker()
@@ -119,6 +121,7 @@ class GiveawayService(
         eventBus.close()
         backendDirectory.close()
         bossBars.keys.toList().forEach(::removeBossBar)
+        clearAllGlow()
         inventoryLocks.clear()
         startsInFlight.clear()
         recoveryIncidents.clearAll()
@@ -430,6 +433,7 @@ class GiveawayService(
     fun onPlayerQuit(player: Player) {
         pvpNoticeAt.remove(player.uniqueId)
         claimNoticeAt.remove(player.uniqueId)
+        releaseGlow(player)
         cache.values.filter {
             it.serverId == settings.serverId && it.hostId == player.uniqueId.toString() &&
                 (it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING)
@@ -686,7 +690,8 @@ class GiveawayService(
 
     private fun tick() {
         val now = clockMs()
-        cache.values.toList().forEach { record ->
+        val records = cache.values.toList()
+        records.forEach { record ->
             when {
                 record.serverId == settings.serverId && record.status == GiveawayStatus.PREPARING -> recoverPreparing(record)
                 record.serverId == settings.serverId && record.hostHandoffUntilMs != null && now >= record.hostHandoffUntilMs -> expireHostHandoff(record)
@@ -703,6 +708,7 @@ class GiveawayService(
                 clearVisualRuntime(record.id)
             }
         }
+        reconcileGlow(records)
         cleanupTerminal(now)
     }
 
@@ -999,16 +1005,20 @@ class GiveawayService(
         if (!stage.enabled) return
 
         val center = host.location.clone()
-        val pulseIntervalMs = stage.intervalSeconds * 1_000L
+        val pulseIntervalMs = scaledInterval(stage.intervalSeconds * 1_000L, effects.intensity)
         val lastPulse = visualPulseAt[record.id]
         if (settings.particlesEnabled && stage.particleCount > 0 &&
             (sceneChanged || lastPulse == null || now - lastPulse >= pulseIntervalMs)
         ) {
             visualPulseAt[record.id] = now
-            presentation.renderScene(center, scene, GiveawaySceneSpec(stage.particleCount, stage.radius))
+            presentation.renderScene(
+                center,
+                scene,
+                GiveawaySceneSpec(scaledCount(stage.particleCount, effects.intensity), stage.radius),
+            )
         }
 
-        val fireworkIntervalMs = stage.fireworkIntervalSeconds * 1_000L
+        val fireworkIntervalMs = scaledInterval(stage.fireworkIntervalSeconds * 1_000L, effects.intensity)
         val lastFirework = visualFireworkAt[record.id]
         if (settings.fireworksEnabled && stage.fireworkIntervalSeconds > 0 &&
             (sceneChanged || lastFirework == null || now - lastFirework >= fireworkIntervalMs)
@@ -1017,6 +1027,40 @@ class GiveawayService(
             val variant = visualFireworkVariant.getOrDefault(record.id, 0)
             visualFireworkVariant[record.id] = variant + 1
             presentation.launchFirework(center, scene, effects.fireworkStyle, variant)
+        }
+    }
+
+    private fun reconcileGlow(records: List<GiveawayRecord>) {
+        val glow = settings.visualEffects.glow
+        val desired = mutableSetOf<UUID>()
+        if (glow.enabled) {
+            records.filter { it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING }.forEach { record ->
+                if (glow.host) runCatching { UUID.fromString(record.hostId) }.getOrNull()?.let(desired::add)
+                if (glow.participants) {
+                    val participants = if (record.status == GiveawayStatus.DRAWING) record.drawingCandidates else record.participants
+                    participants.mapNotNullTo(desired) { runCatching { UUID.fromString(it.playerId) }.getOrNull() }
+                }
+            }
+        }
+        desired.forEach { playerId ->
+            val player = Bukkit.getPlayer(playerId)?.takeIf(Player::isOnline) ?: return@forEach
+            originalGlow.putIfAbsent(playerId, presentation.isGlowing(player))
+            presentation.setGlowing(player, true)
+        }
+        (originalGlow.keys - desired).toList().forEach { playerId ->
+            Bukkit.getPlayer(playerId)?.takeIf(Player::isOnline)?.let(::releaseGlow)
+                ?: originalGlow.remove(playerId)
+        }
+    }
+
+    private fun releaseGlow(player: Player) {
+        val original = originalGlow.remove(player.uniqueId) ?: return
+        presentation.setGlowing(player, original)
+    }
+
+    private fun clearAllGlow() {
+        originalGlow.keys.toList().forEach { playerId ->
+            Bukkit.getPlayer(playerId)?.let(::releaseGlow) ?: originalGlow.remove(playerId)
         }
     }
 
@@ -1137,12 +1181,14 @@ class GiveawayService(
             presentation.renderScene(
                 player.location.clone(),
                 GiveawayVisualScene.WINNER,
-                GiveawaySceneSpec(effects.winner.particleCount, effects.winner.radius),
+                GiveawaySceneSpec(scaledCount(effects.winner.particleCount, effects.intensity), effects.winner.radius),
             )
         }
         if (settings.fireworksEnabled) {
-            repeat(effects.winner.fireworkCount) { index ->
-                lifecycleTasks.runLater(index * effects.winner.fireworkIntervalTicks.toLong()) firework@{
+            val fireworkCount = scaledCount(effects.winner.fireworkCount, effects.intensity)
+            val fireworkInterval = scaledInterval(effects.winner.fireworkIntervalTicks.toLong(), effects.intensity)
+            repeat(fireworkCount) { index ->
+                lifecycleTasks.runLater(index * fireworkInterval) firework@{
                     if (!player.isOnline) return@firework
                     presentation.launchFirework(
                         player.location.clone(),
@@ -1313,6 +1359,16 @@ class GiveawayService(
         visualPulseAt.remove(id)
         visualFireworkAt.remove(id)
         visualFireworkVariant.remove(id)
+    }
+
+    private fun scaledCount(base: Int, intensity: Double): Int = when {
+        base <= 0 -> 0
+        else -> (base * intensity).roundToInt().coerceAtLeast(1)
+    }
+
+    private fun scaledInterval(base: Long, intensity: Double): Long = when {
+        base <= 0L -> 0L
+        else -> ceil(base / intensity).toLong().coerceAtLeast(1L)
     }
 
     private fun participantPlayers(participants: List<GiveawayParticipant>): List<Player> = participants.mapNotNull { participant ->

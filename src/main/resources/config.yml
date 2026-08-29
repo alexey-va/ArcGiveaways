@@ -30,6 +30,13 @@ effects:
   # Master switches for every world-space scene below.
   particles: true
   fireworks: true
+  # One safe master dial for particle density and firework cadence/count.
+  # 1.0 is the full show; lower it to reduce load and visual noise.
+  intensity: 1.0
+  glow:
+    enabled: true
+    host: true
+    participants: true
   firework-style:
     # Vanilla firework flight power. Keep this small so the show stays near the giveaway.
     power: 1
@@ -40,28 +47,28 @@ effects:
     countdown-threshold-seconds: 5
     ambient:
       enabled: true
-      interval-seconds: 2
-      particle-count: 28
-      radius: 1.8
-      firework-interval-seconds: 15
+      interval-seconds: 1
+      particle-count: 160
+      radius: 2.6
+      firework-interval-seconds: 6
     countdown:
       enabled: true
       interval-seconds: 1
-      particle-count: 64
-      radius: 2.3
-      firework-interval-seconds: 3
+      particle-count: 320
+      radius: 3.6
+      firework-interval-seconds: 1
     drawing:
       enabled: true
       interval-seconds: 1
-      particle-count: 96
-      radius: 2.8
-      firework-interval-seconds: 2
+      particle-count: 480
+      radius: 4.4
+      firework-interval-seconds: 1
     winner:
       enabled: true
-      particle-count: 220
-      radius: 3.5
-      firework-count: 6
-      firework-interval-ticks: 7
+      particle-count: 1000
+      radius: 6.0
+      firework-count: 18
+      firework-interval-ticks: 3
 
 locale:
   default: ru

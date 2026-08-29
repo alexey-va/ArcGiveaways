@@ -27,10 +27,12 @@ class GiveawayConfigTest :
                     settings.hostHandoffSeconds shouldBe 45
                     settings.defaultLocale shouldBe "ru"
                     settings.useClientLocale shouldBe false
-                    settings.visualEffects.ambient.fireworkIntervalSeconds shouldBe 15
-                    settings.visualEffects.countdown.particleCount shouldBe 64
-                    settings.visualEffects.drawing.particleCount shouldBe 96
-                    settings.visualEffects.winner.fireworkCount shouldBe 6
+                    settings.visualEffects.intensity shouldBe 1.0
+                    settings.visualEffects.ambient.fireworkIntervalSeconds shouldBe 6
+                    settings.visualEffects.countdown.particleCount shouldBe 320
+                    settings.visualEffects.drawing.particleCount shouldBe 480
+                    settings.visualEffects.winner.fireworkCount shouldBe 18
+                    settings.visualEffects.glow.enabled shouldBe true
                 }
             }
             ConfigManager.clear()
@@ -54,12 +56,14 @@ class GiveawayConfigTest :
                 val effects = GiveawayConfig.load(root).visualEffects
 
                 effects.countdownThresholdSeconds shouldBe 5
-                effects.ambient.particleCount shouldBe 28
-                effects.ambient.fireworkIntervalSeconds shouldBe 15
-                effects.drawing.particleCount shouldBe 96
-                effects.winner.particleCount shouldBe 220
-                effects.winner.fireworkCount shouldBe 6
+                effects.intensity shouldBe 1.0
+                effects.ambient.particleCount shouldBe 160
+                effects.ambient.fireworkIntervalSeconds shouldBe 6
+                effects.drawing.particleCount shouldBe 480
+                effects.winner.particleCount shouldBe 1000
+                effects.winner.fireworkCount shouldBe 18
                 effects.fireworkStyle.colors.size shouldBe 6
+                effects.glow shouldBe GiveawayGlowSettings(enabled = true, host = true, participants = true)
             } finally {
                 ConfigManager.clear()
                 root.toFile().deleteRecursively()
@@ -76,7 +80,7 @@ class GiveawayConfigTest :
                     effects:
                       scenes:
                         ambient:
-                          particle-count: 301
+                          particle-count: 601
                     """.trimIndent(),
                 )
                 ConfigManager.clear()

@@ -155,6 +155,30 @@ class GiveawayServiceMockBukkitTest : FunSpec({
         }
     }
 
+    test("global intensity scales particle density and cadence down from the full show") {
+        withGiveawayFixture(intensity = 0.25) { fixture ->
+            val host = fixture.player("Host")
+            val record = fixture.openRecord(host)
+            fixture.repository.create(record).join() shouldBe true
+            fixture.start()
+            fixture.await("reduced ambient scene") {
+                fixture.scenes().any { it.scene == GiveawayVisualScene.AMBIENT }
+            }
+
+            val first = fixture.scenes().last { it.scene == GiveawayVisualScene.AMBIENT }
+            first.spec.particleCount shouldBe 40
+            val initialCount = fixture.scenes().count { it.scene == GiveawayVisualScene.AMBIENT }
+
+            fixture.nowMs += 1_000L
+            fixture.paper.performTicks(20)
+            fixture.scenes().count { it.scene == GiveawayVisualScene.AMBIENT } shouldBe initialCount
+
+            fixture.nowMs += 3_000L
+            fixture.paper.performTicks(60)
+            fixture.scenes().count { it.scene == GiveawayVisualScene.AMBIENT } shouldBe initialCount + 1
+        }
+    }
+
     test("joining through the public service teleports the player and announces participation to everyone") {
         withGiveawayFixture { fixture ->
             val host = fixture.player("Host")
@@ -200,6 +224,9 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             fixture.await("first participant") { fixture.repository.load(id).join()?.participants?.size == 1 }
             fixture.service.join(second, id)
             fixture.await("second participant") { fixture.repository.load(id).join()?.participants?.size == 2 }
+            fixture.await("host and participants to glow") {
+                fixture.glowing(host) && fixture.glowing(first) && fixture.glowing(second)
+            }
 
             fixture.nowMs = requireNotNull(fixture.repository.load(id).join()).drawAtMs
             fixture.await("drawing phase") { fixture.repository.load(id).join()?.status == GiveawayStatus.DRAWING }
@@ -227,7 +254,10 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             } shouldBe true
             fixture.await("winner spectacle") {
                 fixture.scenes().any { it.scene == GiveawayVisualScene.WINNER } &&
-                    fixture.fireworks().count { it.scene == GiveawayVisualScene.WINNER } == 6
+                    fixture.fireworks().count { it.scene == GiveawayVisualScene.WINNER } == 18
+            }
+            fixture.await("giveaway glow to clear") {
+                !fixture.glowing(host) && !fixture.glowing(first) && !fixture.glowing(second)
             }
         }
     }
@@ -408,15 +438,15 @@ class GiveawayServiceMockBukkitTest : FunSpec({
     }
 })
 
-private fun withGiveawayFixture(block: (GiveawayPaperFixture) -> Unit) {
+private fun withGiveawayFixture(intensity: Double = 1.0, block: (GiveawayPaperFixture) -> Unit) {
     try {
-        GiveawayPaperFixture().use(block)
+        GiveawayPaperFixture(intensity).use(block)
     } catch (failure: TestAbortedException) {
         throw AssertionError("MockBukkit scenario was aborted instead of executed", failure)
     }
 }
 
-private class GiveawayPaperFixture : AutoCloseable {
+private class GiveawayPaperFixture(intensity: Double) : AutoCloseable {
     val paper: MockBukkitTestRuntime = MockBukkitTestRuntime.open()
     private val plugin = paper.createSimplePlugin("ArcGiveawaysTest")
     private val dataRoot: Path = Files.createTempDirectory("arcgiveaways-paper-test-")
@@ -433,7 +463,7 @@ private class GiveawayPaperFixture : AutoCloseable {
 
     init {
         PaperArcRuntime.installScheduling(plugin)
-        writeFixtureConfig(dataRoot)
+        writeFixtureConfig(dataRoot, intensity)
         ConfigManager.clear()
         val settings = GiveawayConfig.load(dataRoot)
         val locale = GiveawayLocale(dataRoot) { settings }
@@ -529,6 +559,8 @@ private class GiveawayPaperFixture : AutoCloseable {
 
     fun fireworks(): List<ShownFirework> = presentation.fireworks()
 
+    fun glowing(player: Player): Boolean = presentation.isGlowing(player)
+
     override fun close() {
         runCatching(service::close)
         Tasks.reset()
@@ -590,6 +622,7 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
     private val shownTitles = mutableListOf<ShownTitle>()
     private val shownScenes = mutableListOf<ShownScene>()
     private val shownFireworks = mutableListOf<ShownFirework>()
+    private val glowing = mutableMapOf<UUID, Boolean>()
 
     override fun effectiveItemName(item: ItemStack): Component = Component.translatable(item.translationKey())
 
@@ -597,6 +630,12 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
 
     override fun showTitle(player: Player, title: Title) {
         shownTitles += ShownTitle(player.uniqueId, title)
+    }
+
+    override fun isGlowing(player: Player): Boolean = glowing.getOrDefault(player.uniqueId, false)
+
+    override fun setGlowing(player: Player, glowing: Boolean) {
+        this.glowing[player.uniqueId] = glowing
     }
 
     override fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec) {
@@ -635,7 +674,7 @@ private fun Component.runCommands(): List<String> = buildList {
     children().forEach { addAll(it.runCommands()) }
 }
 
-private fun writeFixtureConfig(root: Path) {
+private fun writeFixtureConfig(root: Path, intensity: Double) {
     Files.createDirectories(root.resolve("lang"))
     listOf("ru", "en").forEach { language ->
         requireNotNull(GiveawayServiceMockBukkitTest::class.java.getResourceAsStream("/lang/$language.yml")).use { source ->
@@ -672,6 +711,7 @@ private fun writeFixtureConfig(root: Path) {
           sounds: false
           particles: true
           fireworks: true
+          intensity: $intensity
         locale:
           default: ru
           use-client-locale: false

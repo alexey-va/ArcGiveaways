@@ -31,13 +31,21 @@ data class GiveawayFireworkStyle(
     val fadeColors: List<String>,
 )
 
+data class GiveawayGlowSettings(
+    val enabled: Boolean,
+    val host: Boolean,
+    val participants: Boolean,
+)
+
 data class GiveawayVisualEffectSettings(
+    val intensity: Double,
     val countdownThresholdSeconds: Int,
     val ambient: GiveawayStageEffectSettings,
     val countdown: GiveawayStageEffectSettings,
     val drawing: GiveawayStageEffectSettings,
     val winner: GiveawayWinnerEffectSettings,
     val fireworkStyle: GiveawayFireworkStyle,
+    val glow: GiveawayGlowSettings,
 )
 
 class GiveawayConfig(private val config: Config) {
@@ -68,16 +76,17 @@ class GiveawayConfig(private val config: Config) {
     val particlesEnabled: Boolean get() = config.bool("effects.particles", true)
     val fireworksEnabled: Boolean get() = config.bool("effects.fireworks", true)
     val visualEffects: GiveawayVisualEffectSettings get() = GiveawayVisualEffectSettings(
+        intensity = config.double("effects.intensity", 1.0),
         countdownThresholdSeconds = config.int("effects.scenes.countdown-threshold-seconds", 5),
-        ambient = stageEffects("effects.scenes.ambient", intervalSeconds = 2, particleCount = 28, radius = 1.8, fireworkIntervalSeconds = 15),
-        countdown = stageEffects("effects.scenes.countdown", intervalSeconds = 1, particleCount = 64, radius = 2.3, fireworkIntervalSeconds = 3),
-        drawing = stageEffects("effects.scenes.drawing", intervalSeconds = 1, particleCount = 96, radius = 2.8, fireworkIntervalSeconds = 2),
+        ambient = stageEffects("effects.scenes.ambient", intervalSeconds = 1, particleCount = 160, radius = 2.6, fireworkIntervalSeconds = 6),
+        countdown = stageEffects("effects.scenes.countdown", intervalSeconds = 1, particleCount = 320, radius = 3.6, fireworkIntervalSeconds = 1),
+        drawing = stageEffects("effects.scenes.drawing", intervalSeconds = 1, particleCount = 480, radius = 4.4, fireworkIntervalSeconds = 1),
         winner = GiveawayWinnerEffectSettings(
             enabled = config.bool("effects.scenes.winner.enabled", true),
-            particleCount = config.int("effects.scenes.winner.particle-count", 220),
-            radius = config.double("effects.scenes.winner.radius", 3.5),
-            fireworkCount = config.int("effects.scenes.winner.firework-count", 6),
-            fireworkIntervalTicks = config.int("effects.scenes.winner.firework-interval-ticks", 7),
+            particleCount = config.int("effects.scenes.winner.particle-count", 1000),
+            radius = config.double("effects.scenes.winner.radius", 6.0),
+            fireworkCount = config.int("effects.scenes.winner.firework-count", 18),
+            fireworkIntervalTicks = config.int("effects.scenes.winner.firework-interval-ticks", 3),
         ),
         fireworkStyle = GiveawayFireworkStyle(
             power = config.int("effects.firework-style.power", 1),
@@ -89,6 +98,11 @@ class GiveawayConfig(private val config: Config) {
                 "effects.firework-style.fade-colors",
                 listOf("#ffffff", "#fff3c4"),
             ),
+        ),
+        glow = GiveawayGlowSettings(
+            enabled = config.bool("effects.glow.enabled", true),
+            host = config.bool("effects.glow.host", true),
+            participants = config.bool("effects.glow.participants", true),
         ),
     )
     val defaultLocale: String get() = config.string("locale.default", "ru").lowercase()
@@ -133,6 +147,7 @@ class GiveawayConfig(private val config: Config) {
     )
 
     private fun validateVisualEffects(effects: GiveawayVisualEffectSettings) {
+        require(effects.intensity in 0.1..1.0) { "effects.intensity must be between 0.1 and 1.0" }
         require(effects.countdownThresholdSeconds in 1..10 && effects.countdownThresholdSeconds <= openSeconds) {
             "effects.scenes.countdown-threshold-seconds must be between 1 and 10 and not exceed open-seconds"
         }
@@ -142,15 +157,15 @@ class GiveawayConfig(private val config: Config) {
             "drawing" to effects.drawing,
         ).forEach { (name, stage) ->
             require(stage.intervalSeconds in 1..30) { "effects.scenes.$name.interval-seconds must be between 1 and 30" }
-            require(stage.particleCount in 0..300) { "effects.scenes.$name.particle-count must be between 0 and 300" }
-            require(stage.radius in 0.5..8.0) { "effects.scenes.$name.radius must be between 0.5 and 8" }
+            require(stage.particleCount in 0..600) { "effects.scenes.$name.particle-count must be between 0 and 600" }
+            require(stage.radius in 0.5..10.0) { "effects.scenes.$name.radius must be between 0.5 and 10" }
             require(stage.fireworkIntervalSeconds in 0..300) {
                 "effects.scenes.$name.firework-interval-seconds must be between 0 and 300"
             }
         }
-        require(effects.winner.particleCount in 0..300) { "effects.scenes.winner.particle-count must be between 0 and 300" }
-        require(effects.winner.radius in 0.5..8.0) { "effects.scenes.winner.radius must be between 0.5 and 8" }
-        require(effects.winner.fireworkCount in 0..12) { "effects.scenes.winner.firework-count must be between 0 and 12" }
+        require(effects.winner.particleCount in 0..1200) { "effects.scenes.winner.particle-count must be between 0 and 1200" }
+        require(effects.winner.radius in 0.5..12.0) { "effects.scenes.winner.radius must be between 0.5 and 12" }
+        require(effects.winner.fireworkCount in 0..24) { "effects.scenes.winner.firework-count must be between 0 and 24" }
         require(effects.winner.fireworkIntervalTicks in 1..40) {
             "effects.scenes.winner.firework-interval-ticks must be between 1 and 40"
         }
