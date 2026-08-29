@@ -75,6 +75,8 @@ class GiveawayService(
     private val visualPulseAt = mutableMapOf<String, Long>()
     private val visualFireworkAt = mutableMapOf<String, Long>()
     private val visualFireworkVariant = mutableMapOf<String, Int>()
+    private val itemDisplays = mutableMapOf<String, GiveawayItemDisplayHandle>()
+    private val itemDisplayYaw = mutableMapOf<String, Float>()
     private val originalGlow = mutableMapOf<UUID, Boolean>()
     private val claimNoticeAt = mutableMapOf<UUID, Long>()
     private val pvpNoticeAt = mutableMapOf<UUID, Long>()
@@ -103,6 +105,7 @@ class GiveawayService(
         reconcile()
         heartbeatPresence()
         lifecycleTasks.runTimer(20, 20, ::tick)
+        lifecycleTasks.runTimer(1, ITEM_DISPLAY_UPDATE_TICKS, ::updateItemDisplays)
         lifecycleTasks.runTimer(40, 100, ::reconcile)
         lifecycleTasks.runTimer(
             settings.presenceHeartbeatSeconds * TICKS_PER_SECOND,
@@ -114,6 +117,7 @@ class GiveawayService(
     fun reload(updated: GiveawayConfig) {
         settings = updated.validated()
         engine = newEngine(settings)
+        clearAllItemDisplays()
     }
 
     override fun close() {
@@ -121,6 +125,7 @@ class GiveawayService(
         eventBus.close()
         backendDirectory.close()
         bossBars.keys.toList().forEach(::removeBossBar)
+        clearAllItemDisplays()
         clearAllGlow()
         inventoryLocks.clear()
         startsInFlight.clear()
@@ -1030,6 +1035,44 @@ class GiveawayService(
         }
     }
 
+    private fun updateItemDisplays() {
+        val displaySettings = settings.visualEffects.itemDisplay
+        if (!displaySettings.enabled) {
+            clearAllItemDisplays()
+            return
+        }
+        val desiredIds = mutableSetOf<String>()
+        cache.values.forEach { record ->
+            if (record.serverId != settings.serverId ||
+                record.status !in setOf(GiveawayStatus.OPEN, GiveawayStatus.DRAWING) ||
+                record.hostHandoffUntilMs != null
+            ) return@forEach
+            val host = runCatching { Bukkit.getPlayer(UUID.fromString(record.hostId)) }.getOrNull()
+                ?.takeIf(Player::isOnline)
+                ?: return@forEach
+            desiredIds += record.id
+            val yaw = itemDisplayYaw.getOrDefault(record.id, 0f)
+            val pose = GiveawayItemDisplayPose(
+                location = host.location.clone().apply {
+                    y = host.boundingBox.maxY + displaySettings.heightAboveHead
+                    setYaw(0f)
+                    setPitch(0f)
+                },
+                yawDegrees = yaw,
+            )
+            val current = itemDisplays[record.id]
+            if (current == null) {
+                val item = restoreItem(record.item) ?: return@forEach
+                itemDisplays[record.id] = presentation.createItemDisplay(item, pose, displaySettings.scale.toFloat())
+            } else if (!current.update(pose)) {
+                removeItemDisplay(record.id)
+            }
+            itemDisplayYaw[record.id] =
+                (yaw + 360f * ITEM_DISPLAY_UPDATE_TICKS.toFloat() / displaySettings.rotationPeriodTicks).mod(360f)
+        }
+        (itemDisplays.keys - desiredIds).toList().forEach(::removeItemDisplay)
+    }
+
     private fun reconcileGlow(records: List<GiveawayRecord>) {
         val glow = settings.visualEffects.glow
         val desired = mutableSetOf<UUID>()
@@ -1359,6 +1402,16 @@ class GiveawayService(
         visualPulseAt.remove(id)
         visualFireworkAt.remove(id)
         visualFireworkVariant.remove(id)
+        removeItemDisplay(id)
+    }
+
+    private fun removeItemDisplay(id: String) {
+        itemDisplays.remove(id)?.let { handle -> runCatching(handle::remove) }
+        itemDisplayYaw.remove(id)
+    }
+
+    private fun clearAllItemDisplays() {
+        itemDisplays.keys.toList().forEach(::removeItemDisplay)
     }
 
     private fun scaledCount(base: Int, intensity: Double): Int = when {
@@ -1478,7 +1531,9 @@ class GiveawayService(
 
     companion object {
         const val VISUAL_FIREWORK_TAG = "arcgiveaways_visual"
+        const val VISUAL_ITEM_DISPLAY_TAG = "arcgiveaways_item_display"
         private const val TICKS_PER_SECOND = 20L
+        private const val ITEM_DISPLAY_UPDATE_TICKS = 2L
     }
 
     private fun <T> CompletableFuture<T>.onMain(success: (T) -> Unit, failure: (Throwable) -> Unit) {

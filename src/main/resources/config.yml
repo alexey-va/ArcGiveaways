@@ -37,6 +37,14 @@ effects:
     enabled: true
     host: true
     participants: true
+  item-display:
+    # Show the exact escrow item above the active host, including custom model data.
+    enabled: true
+    # Offset from the live top of the player's bounding box, so sneaking and swimming stay aligned.
+    height-above-head: 0.65
+    scale: 1.25
+    # One full rotation in ticks. The display position itself is refreshed every two ticks.
+    rotation-period-ticks: 80
   firework-style:
     # Vanilla firework flight power. Keep this small so the show stays near the giveaway.
     power: 1

@@ -6,9 +6,14 @@ import org.bukkit.Color
 import org.bukkit.FireworkEffect
 import org.bukkit.Location
 import org.bukkit.Particle
+import org.bukkit.entity.Display
 import org.bukkit.entity.Firework
+import org.bukkit.entity.ItemDisplay
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
+import org.bukkit.util.Transformation
+import org.joml.Quaternionf
+import org.joml.Vector3f
 import ru.ruscrafting.giveaways.config.GiveawayFireworkStyle
 import java.util.concurrent.CompletableFuture
 import kotlin.math.PI
@@ -28,6 +33,17 @@ data class GiveawaySceneSpec(
     val radius: Double,
 )
 
+data class GiveawayItemDisplayPose(
+    val location: Location,
+    val yawDegrees: Float,
+)
+
+interface GiveawayItemDisplayHandle {
+    fun update(pose: GiveawayItemDisplayPose): Boolean
+
+    fun remove()
+}
+
 /** Feature-facing presentation boundary; message content and timing stay in GiveawayService. */
 interface GiveawayPresentationPort {
     fun effectiveItemName(item: ItemStack): Component
@@ -39,6 +55,8 @@ interface GiveawayPresentationPort {
     fun isGlowing(player: Player): Boolean
 
     fun setGlowing(player: Player, glowing: Boolean)
+
+    fun createItemDisplay(item: ItemStack, pose: GiveawayItemDisplayPose, scale: Float): GiveawayItemDisplayHandle
 
     fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec)
 
@@ -58,6 +76,41 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
 
     override fun setGlowing(player: Player, glowing: Boolean) {
         player.isGlowing = glowing
+    }
+
+    override fun createItemDisplay(
+        item: ItemStack,
+        pose: GiveawayItemDisplayPose,
+        scale: Float,
+    ): GiveawayItemDisplayHandle {
+        val location = pose.location.clone().apply {
+            setYaw(pose.yawDegrees)
+            setPitch(0f)
+        }
+        val display = location.world.spawn(location, ItemDisplay::class.java) { entity ->
+            entity.setItemStack(item.clone())
+            entity.itemDisplayTransform = ItemDisplay.ItemDisplayTransform.FIXED
+            entity.billboard = Display.Billboard.FIXED
+            entity.transformation = Transformation(
+                Vector3f(),
+                Quaternionf(),
+                Vector3f(scale, scale, scale),
+                Quaternionf(),
+            )
+            entity.interpolationDuration = ITEM_DISPLAY_INTERPOLATION_TICKS
+            entity.teleportDuration = ITEM_DISPLAY_INTERPOLATION_TICKS
+            entity.viewRange = 1.0f
+            entity.displayWidth = scale.coerceAtLeast(1.0f)
+            entity.displayHeight = scale.coerceAtLeast(1.0f)
+            entity.shadowRadius = 0f
+            entity.brightness = Display.Brightness(15, 15)
+            entity.setGravity(false)
+            entity.isInvulnerable = true
+            entity.isPersistent = false
+            entity.isSilent = true
+            entity.addScoreboardTag(GiveawayService.VISUAL_ITEM_DISPLAY_TAG)
+        }
+        return NativeGiveawayItemDisplayHandle(display)
     }
 
     override fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec) {
@@ -387,6 +440,23 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
 
     private fun parseColor(value: String): Color = Color.fromRGB(value.removePrefix("#").toInt(16))
 
+    private class NativeGiveawayItemDisplayHandle(
+        private val display: ItemDisplay,
+    ) : GiveawayItemDisplayHandle {
+        override fun update(pose: GiveawayItemDisplayPose): Boolean {
+            if (!display.isValid) return false
+            val target = pose.location.clone().apply {
+                setYaw(pose.yawDegrees)
+                setPitch(0f)
+            }
+            return display.teleport(target)
+        }
+
+        override fun remove() {
+            if (display.isValid) display.remove()
+        }
+    }
+
     private enum class OrbitPlane { HORIZONTAL, VERTICAL_X, VERTICAL_Z }
 
     private val WARM_COLORS = listOf(
@@ -411,6 +481,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         Color.fromRGB(0xaf52de),
         Color.fromRGB(0xff2d55),
     )
+    private const val ITEM_DISPLAY_INTERPOLATION_TICKS = 3
 }
 
 /** Owns only giveaway arrival selection and the local Paper teleport request. */

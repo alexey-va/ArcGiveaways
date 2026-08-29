@@ -32,6 +32,7 @@ import ru.ruscrafting.giveaways.network.GiveawayBackendDirectory
 import ru.ruscrafting.giveaways.network.RedisGiveawayRepository
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -123,6 +124,54 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             aura.x shouldBe host.location.x
             aura.y shouldBe host.location.y
             aura.z shouldBe host.location.z
+        }
+    }
+
+    test("active local giveaway displays the exact escrow item above the moving host without duplication") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            val giveawayItem = ItemStack.of(Material.DIAMOND, 7).apply {
+                editMeta { it.displayName(Component.text("Семь алмазов")) }
+            }
+            val record = fixture.openRecord(host, item = giveawayItem)
+            fixture.repository.create(record).join() shouldBe true
+            fixture.start()
+            fixture.await("item display to appear") { fixture.itemDisplays().size == 1 }
+
+            val display = fixture.itemDisplays().single()
+            display.item shouldBe giveawayItem
+            display.scale shouldBe 1.25f
+            val initialPose = display.handle.poses.last()
+            initialPose.location.x shouldBe host.location.x
+            initialPose.location.y shouldBe host.boundingBox.maxY + 0.65
+            initialPose.location.z shouldBe host.location.z
+
+            host.teleport(host.location.clone().add(12.0, 0.0, -7.0)) shouldBe true
+            fixture.paper.performTicks(4)
+
+            fixture.itemDisplays().size shouldBe 1
+            val movedPose = display.handle.poses.last()
+            movedPose.location.x shouldBe host.location.x
+            movedPose.location.y shouldBe host.boundingBox.maxY + 0.65
+            movedPose.location.z shouldBe host.location.z
+            (movedPose.yawDegrees > initialPose.yawDegrees) shouldBe true
+        }
+    }
+
+    test("reloading item display settings replaces the active display") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            val record = fixture.openRecord(host)
+            fixture.repository.create(record).join() shouldBe true
+            fixture.start()
+            fixture.await("initial item display") { fixture.itemDisplays().size == 1 }
+            val initial = fixture.itemDisplays().single()
+
+            fixture.reloadItemDisplay(scale = 2.0)
+
+            fixture.await("reloaded item display") { fixture.itemDisplays().size == 2 }
+            initial.handle.removed shouldBe true
+            fixture.itemDisplays().last().scale shouldBe 2.0f
         }
     }
 
@@ -356,6 +405,8 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             fixture.service.startGiveaway(host, null)
             fixture.await("giveaway to open") { fixture.service.activeRecords().singleOrNull()?.status == GiveawayStatus.OPEN }
             val id = fixture.service.activeRecords().single().id
+            fixture.await("item display to appear") { fixture.itemDisplays().size == 1 }
+            val itemDisplay = fixture.itemDisplays().single().handle
 
             host.disconnect() shouldBe true
 
@@ -367,6 +418,7 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             handingOff.hostHandoffStartedAtMs shouldBe fixture.nowMs
             handingOff.hostHandoffUntilMs shouldBe fixture.nowMs + 45_000L
             fixture.repository.hostGiveawayId(host.uniqueId.toString()).join() shouldBe id
+            fixture.await("item display to clear during handoff") { itemDisplay.removed }
 
             fixture.nowMs = requireNotNull(handingOff.hostHandoffUntilMs)
             fixture.await("expired handoff refund") {
@@ -393,6 +445,7 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             fixture.repository.claimHost(host.uniqueId.toString(), remote.id).join() shouldBe true
             fixture.start()
             fixture.await("remote giveaway to reconcile") { fixture.service.activeRecords().singleOrNull()?.id == remote.id }
+            fixture.itemDisplays().isEmpty() shouldBe true
             fixture.drainMessages(participant::nextComponentMessage)
 
             host.teleport(host.location.clone().add(9.0, 0.0, 4.0)) shouldBe true
@@ -403,6 +456,7 @@ class GiveawayServiceMockBukkitTest : FunSpec({
                     it.serverId == "spawn" && it.hostHandoffUntilMs == null
                 } == true
             }
+            fixture.await("item display to appear on the receiving backend") { fixture.itemDisplays().size == 1 }
 
             val migrated = requireNotNull(fixture.repository.load(remote.id).join())
             migrated.status shouldBe GiveawayStatus.OPEN
@@ -410,6 +464,8 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             migrated.anchorY shouldBe host.location.y
             migrated.anchorZ shouldBe host.location.z
             migrated.drawAtMs shouldBe remote.drawAtMs + 5_000L
+            fixture.itemDisplays().single().item shouldBe ItemStack.of(Material.DIAMOND, 1)
+            fixture.itemDisplays().single().handle.poses.last().location.x shouldBe host.location.x
             val urgentMessages = mutableListOf<Component>()
             fixture.await("urgent follow announcement") {
                 urgentMessages += fixture.drainComponents(participant::nextComponentMessage)
@@ -446,7 +502,7 @@ private fun withGiveawayFixture(intensity: Double = 1.0, block: (GiveawayPaperFi
     }
 }
 
-private class GiveawayPaperFixture(intensity: Double) : AutoCloseable {
+private class GiveawayPaperFixture(private val intensity: Double) : AutoCloseable {
     val paper: MockBukkitTestRuntime = MockBukkitTestRuntime.open()
     private val plugin = paper.createSimplePlugin("ArcGiveawaysTest")
     private val dataRoot: Path = Files.createTempDirectory("arcgiveaways-paper-test-")
@@ -501,8 +557,8 @@ private class GiveawayPaperFixture(intensity: Double) : AutoCloseable {
         host: Player,
         participants: List<Player> = emptyList(),
         serverId: String = "spawn",
+        item: ItemStack = ItemStack.of(Material.DIAMOND, 1),
     ): GiveawayRecord {
-        val stack = ItemStack.of(Material.DIAMOND, 1)
         return GiveawayRecord(
             id = UUID.randomUUID().toString(),
             revision = 0,
@@ -515,7 +571,7 @@ private class GiveawayPaperFixture(intensity: Double) : AutoCloseable {
             anchorY = host.location.y,
             anchorZ = host.location.z,
             radius = 100.0,
-            item = ItemPayload.capture(stack.type.key.toString(), stack.amount, stack.serializeAsBytes()),
+            item = ItemPayload.capture(item.type.key.toString(), item.amount, item.serializeAsBytes()),
             createdAtMs = nowMs,
             opensAtMs = nowMs,
             drawAtMs = nowMs + 10_000L,
@@ -560,6 +616,14 @@ private class GiveawayPaperFixture(intensity: Double) : AutoCloseable {
     fun fireworks(): List<ShownFirework> = presentation.fireworks()
 
     fun glowing(player: Player): Boolean = presentation.isGlowing(player)
+
+    fun itemDisplays(): List<ShownItemDisplay> = presentation.itemDisplays()
+
+    fun reloadItemDisplay(scale: Double) {
+        writeFixtureConfig(dataRoot, intensity = intensity, itemDisplayScale = scale)
+        ConfigManager.clear()
+        service.reload(GiveawayConfig.load(dataRoot))
+    }
 
     override fun close() {
         runCatching(service::close)
@@ -611,6 +675,11 @@ private class FailingInventoryJournalRepository(
 
 private data class ShownTitle(val playerId: UUID, val title: Title)
 private data class ShownScene(val location: Location, val scene: GiveawayVisualScene, val spec: GiveawaySceneSpec)
+private data class ShownItemDisplay(
+    val item: ItemStack,
+    val scale: Float,
+    val handle: RecordingGiveawayItemDisplayHandle,
+)
 private data class ShownFirework(
     val location: Location,
     val scene: GiveawayVisualScene,
@@ -622,6 +691,7 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
     private val shownTitles = mutableListOf<ShownTitle>()
     private val shownScenes = mutableListOf<ShownScene>()
     private val shownFireworks = mutableListOf<ShownFirework>()
+    private val shownItemDisplays = mutableListOf<ShownItemDisplay>()
     private val glowing = mutableMapOf<UUID, Boolean>()
 
     override fun effectiveItemName(item: ItemStack): Component = Component.translatable(item.translationKey())
@@ -636,6 +706,14 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
 
     override fun setGlowing(player: Player, glowing: Boolean) {
         this.glowing[player.uniqueId] = glowing
+    }
+
+    override fun createItemDisplay(
+        item: ItemStack,
+        pose: GiveawayItemDisplayPose,
+        scale: Float,
+    ): GiveawayItemDisplayHandle = RecordingGiveawayItemDisplayHandle(pose).also { handle ->
+        shownItemDisplays += ShownItemDisplay(item.clone(), scale, handle)
     }
 
     override fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec) {
@@ -657,7 +735,23 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
 
     fun fireworks(): List<ShownFirework> = shownFireworks.toList()
 
+    fun itemDisplays(): List<ShownItemDisplay> = shownItemDisplays.toList()
+
     fun drainParticleLocations(): List<Location> = shownScenes.map(ShownScene::location).also { shownScenes.clear() }
+}
+
+private class RecordingGiveawayItemDisplayHandle(initialPose: GiveawayItemDisplayPose) : GiveawayItemDisplayHandle {
+    val poses = mutableListOf(initialPose.copy(location = initialPose.location.clone()))
+    var removed = false
+
+    override fun update(pose: GiveawayItemDisplayPose): Boolean {
+        poses += pose.copy(location = pose.location.clone())
+        return !removed
+    }
+
+    override fun remove() {
+        removed = true
+    }
 }
 
 private object ImmediateGiveawayTravelPort : GiveawayTravelPort {
@@ -674,11 +768,11 @@ private fun Component.runCommands(): List<String> = buildList {
     children().forEach { addAll(it.runCommands()) }
 }
 
-private fun writeFixtureConfig(root: Path, intensity: Double) {
+private fun writeFixtureConfig(root: Path, intensity: Double, itemDisplayScale: Double = 1.25) {
     Files.createDirectories(root.resolve("lang"))
     listOf("ru", "en").forEach { language ->
         requireNotNull(GiveawayServiceMockBukkitTest::class.java.getResourceAsStream("/lang/$language.yml")).use { source ->
-            Files.copy(source, root.resolve("lang/$language.yml"))
+            Files.copy(source, root.resolve("lang/$language.yml"), StandardCopyOption.REPLACE_EXISTING)
         }
     }
     Files.writeString(
@@ -712,6 +806,11 @@ private fun writeFixtureConfig(root: Path, intensity: Double) {
           particles: true
           fireworks: true
           intensity: $intensity
+          item-display:
+            enabled: true
+            height-above-head: 0.65
+            scale: $itemDisplayScale
+            rotation-period-ticks: 80
         locale:
           default: ru
           use-client-locale: false

@@ -37,6 +37,13 @@ data class GiveawayGlowSettings(
     val participants: Boolean,
 )
 
+data class GiveawayItemDisplaySettings(
+    val enabled: Boolean,
+    val heightAboveHead: Double,
+    val scale: Double,
+    val rotationPeriodTicks: Int,
+)
+
 data class GiveawayVisualEffectSettings(
     val intensity: Double,
     val countdownThresholdSeconds: Int,
@@ -46,6 +53,7 @@ data class GiveawayVisualEffectSettings(
     val winner: GiveawayWinnerEffectSettings,
     val fireworkStyle: GiveawayFireworkStyle,
     val glow: GiveawayGlowSettings,
+    val itemDisplay: GiveawayItemDisplaySettings,
 )
 
 class GiveawayConfig(private val config: Config) {
@@ -103,6 +111,12 @@ class GiveawayConfig(private val config: Config) {
             enabled = config.bool("effects.glow.enabled", true),
             host = config.bool("effects.glow.host", true),
             participants = config.bool("effects.glow.participants", true),
+        ),
+        itemDisplay = GiveawayItemDisplaySettings(
+            enabled = config.bool("effects.item-display.enabled", true),
+            heightAboveHead = config.double("effects.item-display.height-above-head", 0.65),
+            scale = config.double("effects.item-display.scale", 1.25),
+            rotationPeriodTicks = config.int("effects.item-display.rotation-period-ticks", 80),
         ),
     )
     val defaultLocale: String get() = config.string("locale.default", "ru").lowercase()
@@ -173,6 +187,15 @@ class GiveawayConfig(private val config: Config) {
         require(effects.fireworkStyle.colors.size in 1..12) { "effects.firework-style.colors must contain between 1 and 12 colors" }
         require(effects.fireworkStyle.fadeColors.size in 1..12) {
             "effects.firework-style.fade-colors must contain between 1 and 12 colors"
+        }
+        require(effects.itemDisplay.heightAboveHead in 0.25..2.0) {
+            "effects.item-display.height-above-head must be between 0.25 and 2.0"
+        }
+        require(effects.itemDisplay.scale in 0.25..3.0) {
+            "effects.item-display.scale must be between 0.25 and 3.0"
+        }
+        require(effects.itemDisplay.rotationPeriodTicks in 20..1200) {
+            "effects.item-display.rotation-period-ticks must be between 20 and 1200"
         }
         (effects.fireworkStyle.colors + effects.fireworkStyle.fadeColors).forEach { color ->
             require(HEX_COLOR.matches(color)) { "Invalid firework color: $color" }

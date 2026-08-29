@@ -64,6 +64,12 @@ class GiveawayConfigTest :
                 effects.winner.fireworkCount shouldBe 18
                 effects.fireworkStyle.colors.size shouldBe 6
                 effects.glow shouldBe GiveawayGlowSettings(enabled = true, host = true, participants = true)
+                effects.itemDisplay shouldBe GiveawayItemDisplaySettings(
+                    enabled = true,
+                    heightAboveHead = 0.65,
+                    scale = 1.25,
+                    rotationPeriodTicks = 80,
+                )
             } finally {
                 ConfigManager.clear()
                 root.toFile().deleteRecursively()
@@ -86,6 +92,33 @@ class GiveawayConfigTest :
                 ConfigManager.clear()
 
                 shouldThrow<IllegalArgumentException> { GiveawayConfig.load(root) }
+            } finally {
+                ConfigManager.clear()
+                root.toFile().deleteRecursively()
+            }
+        }
+
+        "item display rejects unsafe transforms and rotation periods" {
+            val root = Files.createTempDirectory("arcgiveaways-invalid-item-display-")
+            try {
+                listOf(
+                    "height-above-head: -0.01",
+                    "scale: 3.01",
+                    "rotation-period-ticks: 19",
+                ).forEach { invalidSetting ->
+                    Files.writeString(
+                        root.resolve("config.yml"),
+                        """
+                        server-id: spawn
+                        effects:
+                          item-display:
+                            $invalidSetting
+                        """.trimIndent(),
+                    )
+                    ConfigManager.clear()
+
+                    shouldThrow<IllegalArgumentException> { GiveawayConfig.load(root) }
+                }
             } finally {
                 ConfigManager.clear()
                 root.toFile().deleteRecursively()

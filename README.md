@@ -17,12 +17,15 @@ The host is surrounded by a rotating three-axis particle atom and a geometric
 crown with recurring fireworks. The final countdown becomes a pulsing rainbow
 star with stacked rings, winner selection renders a triple helix with orbiting
 nodes, and victory ends in a rainbow sphere, radial burst, crown, and a dense
-multi-effect firework sequence. The host and current participants glow for the
+multi-effect firework sequence. The exact escrow item floats and rotates above
+the active host, follows their current bounding box, disappears during backend
+handoff, and is recreated from the durable item payload after the receiving
+backend adopts the giveaway. The host and current participants glow for the
 active lifecycle, with their original state restored afterwards. Every interval,
-particle budget, radius, palette, winner firework parameter, and glow role is
-bounded and configurable under `effects`; `effects.intensity` scales the whole
-show down from `1.0`, while `effects.particles` and `effects.fireworks` remain
-master switches.
+particle budget, radius, palette, winner firework parameter, glow role, and item
+display transform is bounded and configurable under `effects`; `effects.intensity`
+scales the whole show down from `1.0`, while `effects.particles` and
+`effects.fireworks` remain master switches.
 
 ## Commands
 
@@ -46,4 +49,4 @@ master switches.
 The Redis/Testcontainers integration suite runs in CI; local development uses
 the unit and MockBukkit suite above.
 
-The deployable artifact is `build/libs/ArcGiveaways-0.1.9.jar`.
+The deployable artifact is `build/libs/ArcGiveaways-0.1.10.jar`.
