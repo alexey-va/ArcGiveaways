@@ -13,6 +13,14 @@ a stale giveaway claim. When the host changes backends, the giveaway and its
 countdown pause during transit, migrate to the new backend, and give every
 registered participant an urgent one-click route back to the host.
 
+The host is surrounded by a warm ambient particle ring with occasional
+fireworks. The scene intensifies for the final countdown, turns into a bright
+double helix during winner selection, and ends with a multicolour winner burst
+plus a configurable firework sequence. Every interval, particle budget, radius,
+palette, and winner firework parameter is bounded and configurable under
+`effects.scenes` / `effects.firework-style`; `effects.particles` and
+`effects.fireworks` remain master switches.
+
 ## Commands
 
 - `/giveaway start [amount]` — start a giveaway with the held item; requires
@@ -35,4 +43,4 @@ registered participant an urgent one-click route back to the host.
 The Redis/Testcontainers integration suite runs in CI; local development uses
 the unit and MockBukkit suite above.
 
-The deployable artifact is `build/libs/ArcGiveaways-0.1.7.jar`.
+The deployable artifact is `build/libs/ArcGiveaways-0.1.8.jar`.

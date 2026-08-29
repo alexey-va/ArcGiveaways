@@ -27,8 +27,41 @@ effects:
   actionbar: true
   titles: true
   sounds: true
+  # Master switches for every world-space scene below.
   particles: true
   fireworks: true
+  firework-style:
+    # Vanilla firework flight power. Keep this small so the show stays near the giveaway.
+    power: 1
+    colors: ['#ff6b00', '#ffd166', '#ff2d95', '#7c4dff', '#38d9ff', '#7dff84']
+    fade-colors: ['#ffffff', '#fff3c4']
+  scenes:
+    # OPEN switches from ambient to countdown at this many seconds remaining.
+    countdown-threshold-seconds: 5
+    ambient:
+      enabled: true
+      interval-seconds: 2
+      particle-count: 28
+      radius: 1.8
+      firework-interval-seconds: 15
+    countdown:
+      enabled: true
+      interval-seconds: 1
+      particle-count: 64
+      radius: 2.3
+      firework-interval-seconds: 3
+    drawing:
+      enabled: true
+      interval-seconds: 1
+      particle-count: 96
+      radius: 2.8
+      firework-interval-seconds: 2
+    winner:
+      enabled: true
+      particle-count: 220
+      radius: 3.5
+      firework-count: 6
+      firework-interval-ticks: 7
 
 locale:
   default: ru

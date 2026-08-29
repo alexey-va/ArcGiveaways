@@ -2,6 +2,7 @@ package ru.ruscrafting.giveaways.config
 
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.assertions.throwables.shouldThrow
 import org.opentest4j.TestAbortedException
 import ru.arc.config.ConfigManager
 import java.nio.file.Files
@@ -26,6 +27,10 @@ class GiveawayConfigTest :
                     settings.hostHandoffSeconds shouldBe 45
                     settings.defaultLocale shouldBe "ru"
                     settings.useClientLocale shouldBe false
+                    settings.visualEffects.ambient.fireworkIntervalSeconds shouldBe 15
+                    settings.visualEffects.countdown.particleCount shouldBe 64
+                    settings.visualEffects.drawing.particleCount shouldBe 96
+                    settings.visualEffects.winner.fireworkCount shouldBe 6
                 }
             }
             ConfigManager.clear()
@@ -36,6 +41,47 @@ class GiveawayConfigTest :
             try {
                 ConfigManager.clear()
                 GiveawayConfig.load(root).hostCooldownSeconds shouldBe 0
+            } finally {
+                ConfigManager.clear()
+                root.toFile().deleteRecursively()
+            }
+        }
+
+        "visual spectacle defaults are vivid but bounded" {
+            val root = Files.createTempDirectory("arcgiveaways-default-effects-")
+            try {
+                ConfigManager.clear()
+                val effects = GiveawayConfig.load(root).visualEffects
+
+                effects.countdownThresholdSeconds shouldBe 5
+                effects.ambient.particleCount shouldBe 28
+                effects.ambient.fireworkIntervalSeconds shouldBe 15
+                effects.drawing.particleCount shouldBe 96
+                effects.winner.particleCount shouldBe 220
+                effects.winner.fireworkCount shouldBe 6
+                effects.fireworkStyle.colors.size shouldBe 6
+            } finally {
+                ConfigManager.clear()
+                root.toFile().deleteRecursively()
+            }
+        }
+
+        "visual spectacle rejects unsafe particle counts" {
+            val root = Files.createTempDirectory("arcgiveaways-invalid-effects-")
+            try {
+                Files.writeString(
+                    root.resolve("config.yml"),
+                    """
+                    server-id: spawn
+                    effects:
+                      scenes:
+                        ambient:
+                          particle-count: 301
+                    """.trimIndent(),
+                )
+                ConfigManager.clear()
+
+                shouldThrow<IllegalArgumentException> { GiveawayConfig.load(root) }
             } finally {
                 ConfigManager.clear()
                 root.toFile().deleteRecursively()

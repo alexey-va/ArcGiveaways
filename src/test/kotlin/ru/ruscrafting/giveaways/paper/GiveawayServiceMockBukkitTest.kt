@@ -22,6 +22,7 @@ import ru.arc.redis.RedisOperations
 import ru.arc.redis.ServerIdentity
 import ru.arc.persistence.DurableAcknowledgementOutcome
 import ru.ruscrafting.giveaways.config.GiveawayConfig
+import ru.ruscrafting.giveaways.config.GiveawayFireworkStyle
 import ru.ruscrafting.giveaways.config.GiveawayLocale
 import ru.ruscrafting.giveaways.domain.GiveawayParticipant
 import ru.ruscrafting.giveaways.domain.GiveawayRecord
@@ -125,6 +126,35 @@ class GiveawayServiceMockBukkitTest : FunSpec({
         }
     }
 
+    test("world spectacle escalates from ambient through countdown and drawing around the live host") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            val participant = fixture.player("Participant")
+            val record = fixture.openRecord(host, listOf(participant))
+            fixture.repository.create(record).join() shouldBe true
+            fixture.start()
+            fixture.await("ambient scene") {
+                fixture.scenes().any { it.scene == GiveawayVisualScene.AMBIENT }
+            }
+
+            fixture.nowMs = record.drawAtMs - 5_000L
+            fixture.paper.performTicks(20)
+            fixture.scenes().any { it.scene == GiveawayVisualScene.COUNTDOWN } shouldBe true
+
+            fixture.nowMs = record.drawAtMs
+            fixture.await("drawing phase") { fixture.repository.load(record.id).join()?.status == GiveawayStatus.DRAWING }
+            fixture.paper.performTicks(20)
+
+            val drawing = fixture.scenes().last { it.scene == GiveawayVisualScene.DRAWING }
+            drawing.location.x shouldBe host.location.x
+            drawing.location.y shouldBe host.location.y
+            drawing.location.z shouldBe host.location.z
+            fixture.fireworks().map { it.scene }.toSet().containsAll(
+                setOf(GiveawayVisualScene.AMBIENT, GiveawayVisualScene.COUNTDOWN, GiveawayVisualScene.DRAWING),
+            ) shouldBe true
+        }
+    }
+
     test("joining through the public service teleports the player and announces participation to everyone") {
         withGiveawayFixture { fixture ->
             val host = fixture.player("Host")
@@ -195,6 +225,10 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             fixture.titles().any { shown ->
                 shown.playerId.toString() == winner.playerId && "Вы победили" in fixture.plain(shown.title.title())
             } shouldBe true
+            fixture.await("winner spectacle") {
+                fixture.scenes().any { it.scene == GiveawayVisualScene.WINNER } &&
+                    fixture.fireworks().count { it.scene == GiveawayVisualScene.WINNER } == 6
+            }
         }
     }
 
@@ -487,6 +521,10 @@ private class GiveawayPaperFixture : AutoCloseable {
 
     fun drainParticleLocations(): List<Location> = presentation.drainParticleLocations()
 
+    fun scenes(): List<ShownScene> = presentation.scenes()
+
+    fun fireworks(): List<ShownFirework> = presentation.fireworks()
+
     override fun close() {
         runCatching(service::close)
         Tasks.reset()
@@ -536,10 +574,18 @@ private class FailingInventoryJournalRepository(
 }
 
 private data class ShownTitle(val playerId: UUID, val title: Title)
+private data class ShownScene(val location: Location, val scene: GiveawayVisualScene, val spec: GiveawaySceneSpec)
+private data class ShownFirework(
+    val location: Location,
+    val scene: GiveawayVisualScene,
+    val style: GiveawayFireworkStyle,
+    val variant: Int,
+)
 
 private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
     private val shownTitles = mutableListOf<ShownTitle>()
-    private val particleLocations = mutableListOf<Location>()
+    private val shownScenes = mutableListOf<ShownScene>()
+    private val shownFireworks = mutableListOf<ShownFirework>()
 
     override fun effectiveItemName(item: ItemStack): Component = Component.translatable(item.translationKey())
 
@@ -549,13 +595,26 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
         shownTitles += ShownTitle(player.uniqueId, title)
     }
 
-    override fun spawnHostAura(center: Location) {
-        particleLocations += center.clone()
+    override fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec) {
+        shownScenes += ShownScene(center.clone(), scene, spec)
+    }
+
+    override fun launchFirework(
+        center: Location,
+        scene: GiveawayVisualScene,
+        style: GiveawayFireworkStyle,
+        variant: Int,
+    ) {
+        shownFireworks += ShownFirework(center.clone(), scene, style, variant)
     }
 
     fun titles(): List<ShownTitle> = shownTitles.toList()
 
-    fun drainParticleLocations(): List<Location> = particleLocations.toList().also { particleLocations.clear() }
+    fun scenes(): List<ShownScene> = shownScenes.toList()
+
+    fun fireworks(): List<ShownFirework> = shownFireworks.toList()
+
+    fun drainParticleLocations(): List<Location> = shownScenes.map(ShownScene::location).also { shownScenes.clear() }
 }
 
 private object ImmediateGiveawayTravelPort : GiveawayTravelPort {
@@ -608,7 +667,7 @@ private fun writeFixtureConfig(root: Path) {
           titles: true
           sounds: false
           particles: true
-          fireworks: false
+          fireworks: true
         locale:
           default: ru
           use-client-locale: false

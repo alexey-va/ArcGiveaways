@@ -9,6 +9,37 @@ import ru.arc.redis.RedisModuleConfig
 import java.nio.file.Files
 import java.nio.file.Path
 
+data class GiveawayStageEffectSettings(
+    val enabled: Boolean,
+    val intervalSeconds: Int,
+    val particleCount: Int,
+    val radius: Double,
+    val fireworkIntervalSeconds: Int,
+)
+
+data class GiveawayWinnerEffectSettings(
+    val enabled: Boolean,
+    val particleCount: Int,
+    val radius: Double,
+    val fireworkCount: Int,
+    val fireworkIntervalTicks: Int,
+)
+
+data class GiveawayFireworkStyle(
+    val power: Int,
+    val colors: List<String>,
+    val fadeColors: List<String>,
+)
+
+data class GiveawayVisualEffectSettings(
+    val countdownThresholdSeconds: Int,
+    val ambient: GiveawayStageEffectSettings,
+    val countdown: GiveawayStageEffectSettings,
+    val drawing: GiveawayStageEffectSettings,
+    val winner: GiveawayWinnerEffectSettings,
+    val fireworkStyle: GiveawayFireworkStyle,
+)
+
 class GiveawayConfig(private val config: Config) {
     val serverId: String get() = config.string("server-id", "spawn").trim().lowercase()
     val radius: Double get() = config.double("giveaway.radius-blocks", 100.0)
@@ -36,6 +67,30 @@ class GiveawayConfig(private val config: Config) {
     val soundsEnabled: Boolean get() = config.bool("effects.sounds", true)
     val particlesEnabled: Boolean get() = config.bool("effects.particles", true)
     val fireworksEnabled: Boolean get() = config.bool("effects.fireworks", true)
+    val visualEffects: GiveawayVisualEffectSettings get() = GiveawayVisualEffectSettings(
+        countdownThresholdSeconds = config.int("effects.scenes.countdown-threshold-seconds", 5),
+        ambient = stageEffects("effects.scenes.ambient", intervalSeconds = 2, particleCount = 28, radius = 1.8, fireworkIntervalSeconds = 15),
+        countdown = stageEffects("effects.scenes.countdown", intervalSeconds = 1, particleCount = 64, radius = 2.3, fireworkIntervalSeconds = 3),
+        drawing = stageEffects("effects.scenes.drawing", intervalSeconds = 1, particleCount = 96, radius = 2.8, fireworkIntervalSeconds = 2),
+        winner = GiveawayWinnerEffectSettings(
+            enabled = config.bool("effects.scenes.winner.enabled", true),
+            particleCount = config.int("effects.scenes.winner.particle-count", 220),
+            radius = config.double("effects.scenes.winner.radius", 3.5),
+            fireworkCount = config.int("effects.scenes.winner.firework-count", 6),
+            fireworkIntervalTicks = config.int("effects.scenes.winner.firework-interval-ticks", 7),
+        ),
+        fireworkStyle = GiveawayFireworkStyle(
+            power = config.int("effects.firework-style.power", 1),
+            colors = config.stringList(
+                "effects.firework-style.colors",
+                listOf("#ff6b00", "#ffd166", "#ff2d95", "#7c4dff", "#38d9ff", "#7dff84"),
+            ),
+            fadeColors = config.stringList(
+                "effects.firework-style.fade-colors",
+                listOf("#ffffff", "#fff3c4"),
+            ),
+        ),
+    )
     val defaultLocale: String get() = config.string("locale.default", "ru").lowercase()
     val useClientLocale: Boolean get() = config.bool("locale.use-client-locale", false)
 
@@ -58,11 +113,60 @@ class GiveawayConfig(private val config: Config) {
         require(allowedOrigins.isNotEmpty() && serverId in allowedOrigins) {
             "cross-server.allowed-origins must include this server-id"
         }
+        validateVisualEffects(visualEffects)
         require(defaultLocale in setOf("ru", "en")) { "locale.default must be ru or en" }
         return this
     }
 
+    private fun stageEffects(
+        path: String,
+        intervalSeconds: Int,
+        particleCount: Int,
+        radius: Double,
+        fireworkIntervalSeconds: Int,
+    ): GiveawayStageEffectSettings = GiveawayStageEffectSettings(
+        enabled = config.bool("$path.enabled", true),
+        intervalSeconds = config.int("$path.interval-seconds", intervalSeconds),
+        particleCount = config.int("$path.particle-count", particleCount),
+        radius = config.double("$path.radius", radius),
+        fireworkIntervalSeconds = config.int("$path.firework-interval-seconds", fireworkIntervalSeconds),
+    )
+
+    private fun validateVisualEffects(effects: GiveawayVisualEffectSettings) {
+        require(effects.countdownThresholdSeconds in 1..10 && effects.countdownThresholdSeconds <= openSeconds) {
+            "effects.scenes.countdown-threshold-seconds must be between 1 and 10 and not exceed open-seconds"
+        }
+        listOf(
+            "ambient" to effects.ambient,
+            "countdown" to effects.countdown,
+            "drawing" to effects.drawing,
+        ).forEach { (name, stage) ->
+            require(stage.intervalSeconds in 1..30) { "effects.scenes.$name.interval-seconds must be between 1 and 30" }
+            require(stage.particleCount in 0..300) { "effects.scenes.$name.particle-count must be between 0 and 300" }
+            require(stage.radius in 0.5..8.0) { "effects.scenes.$name.radius must be between 0.5 and 8" }
+            require(stage.fireworkIntervalSeconds in 0..300) {
+                "effects.scenes.$name.firework-interval-seconds must be between 0 and 300"
+            }
+        }
+        require(effects.winner.particleCount in 0..300) { "effects.scenes.winner.particle-count must be between 0 and 300" }
+        require(effects.winner.radius in 0.5..8.0) { "effects.scenes.winner.radius must be between 0.5 and 8" }
+        require(effects.winner.fireworkCount in 0..12) { "effects.scenes.winner.firework-count must be between 0 and 12" }
+        require(effects.winner.fireworkIntervalTicks in 1..40) {
+            "effects.scenes.winner.firework-interval-ticks must be between 1 and 40"
+        }
+        require(effects.fireworkStyle.power in 0..2) { "effects.firework-style.power must be between 0 and 2" }
+        require(effects.fireworkStyle.colors.size in 1..12) { "effects.firework-style.colors must contain between 1 and 12 colors" }
+        require(effects.fireworkStyle.fadeColors.size in 1..12) {
+            "effects.firework-style.fade-colors must contain between 1 and 12 colors"
+        }
+        (effects.fireworkStyle.colors + effects.fireworkStyle.fadeColors).forEach { color ->
+            require(HEX_COLOR.matches(color)) { "Invalid firework color: $color" }
+        }
+    }
+
     companion object {
+        private val HEX_COLOR = Regex("#[0-9a-fA-F]{6}")
+
         fun load(dataRoot: Path): GiveawayConfig = GiveawayConfig(ConfigManager.of(dataRoot, "config.yml")).validated()
 
         fun inspect(dataRoot: Path): GiveawayConfig = GiveawayConfig(Config(dataRoot, "config.yml")).validated()

@@ -6,10 +6,6 @@ import net.kyori.adventure.text.event.ClickEvent
 import net.kyori.adventure.text.event.HoverEvent
 import net.kyori.adventure.title.Title
 import org.bukkit.Bukkit
-import org.bukkit.Color
-import org.bukkit.FireworkEffect
-import org.bukkit.Location
-import org.bukkit.entity.Firework
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
@@ -74,6 +70,10 @@ class GiveawayService(
     private val announced = mutableSetOf<String>()
     private val winnerAnnounced = mutableSetOf<String>()
     private val countdownSecond = mutableMapOf<String, Int>()
+    private val visualScene = mutableMapOf<String, GiveawayVisualScene>()
+    private val visualPulseAt = mutableMapOf<String, Long>()
+    private val visualFireworkAt = mutableMapOf<String, Long>()
+    private val visualFireworkVariant = mutableMapOf<String, Int>()
     private val claimNoticeAt = mutableMapOf<UUID, Long>()
     private val pvpNoticeAt = mutableMapOf<UUID, Long>()
     private val recoveryIncidents = InventoryRecoveryIncidentTracker()
@@ -700,6 +700,7 @@ class GiveawayService(
                 updateEffects(record, now)
             } else {
                 removeBossBar(record.id)
+                clearVisualRuntime(record.id)
             }
         }
         cleanupTerminal(now)
@@ -965,9 +966,6 @@ class GiveawayService(
                     }
                 }
             }
-            if (record.serverId == settings.serverId && settings.particlesEnabled && now % 2000L < 1000L) {
-                presentation.spawnHostAura(hostCenter(record))
-            }
         } else if (record.status == GiveawayStatus.DRAWING && record.drawingCandidates.isNotEmpty()) {
             val candidate = record.drawingCandidates[(now / 250L % record.drawingCandidates.size).toInt()].playerName
             participantViewers.forEach { player ->
@@ -978,6 +976,47 @@ class GiveawayService(
                 ))
                 play(player, "minecraft:block.note_block.hat", 0.7f, 1.2f)
             }
+        }
+        updateWorldScene(record, now)
+    }
+
+    private fun updateWorldScene(record: GiveawayRecord, now: Long) {
+        if (record.serverId != settings.serverId || record.hostHandoffUntilMs != null) {
+            clearVisualRuntime(record.id)
+            return
+        }
+        val host = runCatching { Bukkit.getPlayer(UUID.fromString(record.hostId)) }.getOrNull()
+            ?.takeIf(Player::isOnline)
+            ?: return
+        val effects = settings.visualEffects
+        val remainingSeconds = ceil((record.drawAtMs - now).coerceAtLeast(0L) / 1000.0).toInt()
+        val (scene, stage) = when {
+            record.status == GiveawayStatus.DRAWING -> GiveawayVisualScene.DRAWING to effects.drawing
+            remainingSeconds <= effects.countdownThresholdSeconds -> GiveawayVisualScene.COUNTDOWN to effects.countdown
+            else -> GiveawayVisualScene.AMBIENT to effects.ambient
+        }
+        val sceneChanged = visualScene.put(record.id, scene) != scene
+        if (!stage.enabled) return
+
+        val center = host.location.clone()
+        val pulseIntervalMs = stage.intervalSeconds * 1_000L
+        val lastPulse = visualPulseAt[record.id]
+        if (settings.particlesEnabled && stage.particleCount > 0 &&
+            (sceneChanged || lastPulse == null || now - lastPulse >= pulseIntervalMs)
+        ) {
+            visualPulseAt[record.id] = now
+            presentation.renderScene(center, scene, GiveawaySceneSpec(stage.particleCount, stage.radius))
+        }
+
+        val fireworkIntervalMs = stage.fireworkIntervalSeconds * 1_000L
+        val lastFirework = visualFireworkAt[record.id]
+        if (settings.fireworksEnabled && stage.fireworkIntervalSeconds > 0 &&
+            (sceneChanged || lastFirework == null || now - lastFirework >= fireworkIntervalMs)
+        ) {
+            visualFireworkAt[record.id] = now
+            val variant = visualFireworkVariant.getOrDefault(record.id, 0)
+            visualFireworkVariant[record.id] = variant + 1
+            presentation.launchFirework(center, scene, effects.fireworkStyle, variant)
         }
     }
 
@@ -1011,6 +1050,7 @@ class GiveawayService(
         if (record.status !in setOf(GiveawayStatus.OPEN, GiveawayStatus.DRAWING)) {
             countdownSecond.remove(record.id)
             removeBossBar(record.id)
+            clearVisualRuntime(record.id)
         }
     }
 
@@ -1091,16 +1131,25 @@ class GiveawayService(
             Title.Times.times(Duration.ofMillis(200), Duration.ofSeconds(3), Duration.ofMillis(500)),
         ))
         play(player, "minecraft:ui.toast.challenge_complete", 1f, 1f)
+        val effects = settings.visualEffects
+        if (!effects.winner.enabled) return
+        if (settings.particlesEnabled && effects.winner.particleCount > 0) {
+            presentation.renderScene(
+                player.location.clone(),
+                GiveawayVisualScene.WINNER,
+                GiveawaySceneSpec(effects.winner.particleCount, effects.winner.radius),
+            )
+        }
         if (settings.fireworksEnabled) {
-            repeat(3) { index ->
-                lifecycleTasks.runLater(index * 8L) firework@{
+            repeat(effects.winner.fireworkCount) { index ->
+                lifecycleTasks.runLater(index * effects.winner.fireworkIntervalTicks.toLong()) firework@{
                     if (!player.isOnline) return@firework
-                    val firework = player.world.spawn(player.location, Firework::class.java)
-                    firework.addScoreboardTag(VISUAL_FIREWORK_TAG)
-                    firework.fireworkMeta = firework.fireworkMeta.apply {
-                        power = 1
-                        addEffect(FireworkEffect.builder().with(FireworkEffect.Type.BALL_LARGE).withColor(Color.ORANGE, Color.YELLOW).withFade(Color.WHITE).trail(true).flicker(true).build())
-                    }
+                    presentation.launchFirework(
+                        player.location.clone(),
+                        GiveawayVisualScene.WINNER,
+                        effects.fireworkStyle,
+                        index,
+                    )
                 }
             }
         }
@@ -1255,20 +1304,16 @@ class GiveawayService(
             announced.remove(id)
             winnerAnnounced.remove(id)
             countdownSecond.remove(id)
+            clearVisualRuntime(id)
         }
     }
 
-    private fun center(record: GiveawayRecord): Location {
-        val world = Bukkit.getWorld(record.worldName) ?: Bukkit.getWorlds().first()
-        return Location(world, record.anchorX, record.anchorY, record.anchorZ)
+    private fun clearVisualRuntime(id: String) {
+        visualScene.remove(id)
+        visualPulseAt.remove(id)
+        visualFireworkAt.remove(id)
+        visualFireworkVariant.remove(id)
     }
-
-    private fun hostCenter(record: GiveawayRecord): Location =
-        runCatching { Bukkit.getPlayer(UUID.fromString(record.hostId)) }.getOrNull()
-            ?.takeIf(Player::isOnline)
-            ?.location
-            ?.clone()
-            ?: center(record)
 
     private fun participantPlayers(participants: List<GiveawayParticipant>): List<Player> = participants.mapNotNull { participant ->
         runCatching { Bukkit.getPlayer(UUID.fromString(participant.playerId)) }.getOrNull()?.takeIf(Player::isOnline)
