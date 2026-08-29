@@ -28,3 +28,12 @@ giveaways.
   Redis `integrationTest` runs in CI, not on the owner's workstation. Set
   `RUSCRAFTING_OPS_ROOT=/absolute/path/to/ruscrafting-ops` to include tests
   that verify tracked runtime profiles.
+
+## Git publication authorization
+
+- The owner grants standing authorization for ordinary non-force pushes of
+  verified trunk commits from this repository to its already-configured GitHub
+  `origin`; do not ask for confirmation again.
+- This does not authorize changing remotes, force-pushing, deleting branches or
+  tags, publishing releases, or bypassing the project's credential and secret
+  handling rules.
