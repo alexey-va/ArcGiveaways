@@ -14,11 +14,6 @@ import ru.arc.logging.LoggingModuleConfig
 import ru.arc.logging.LokiAttachTarget
 import ru.arc.logging.LokiInstallSpec
 import ru.arc.logging.paper.PaperLoggingPlatform
-import ru.arc.metrics.core.ArcMetricsRuntime
-import ru.arc.metrics.core.MetricPoint
-import ru.arc.metrics.core.MetricsConfig
-import ru.arc.metrics.core.MetricsIdentity
-import ru.arc.metrics.core.RedisMetricsBinder
 import ru.arc.paper.network.BungeeBackendTransfer
 import ru.arc.paper.runtime.PaperPluginRuntime
 import ru.arc.observability.RuntimeHealthContribution
@@ -87,7 +82,6 @@ class ArcGiveawaysPlugin : JavaPlugin() {
                 backendDirectory,
             ).also { lifecycle.own(it); it.start() }
             service = activeService
-            installMetrics(lifecycle, manager, activeService)
             lifecycle.registerHealth("runtime") {
                 val redisReady = manager.isConnected()
                 RuntimeHealthContribution(
@@ -177,58 +171,12 @@ class ArcGiveawaysPlugin : JavaPlugin() {
         )
     }
 
-    private fun installMetrics(
-        lifecycle: PaperPluginRuntime,
-        manager: RedisManager,
-        activeService: GiveawayService,
-    ) {
-        val resource = "metrics.yml"
-        val path = ConfigManager.moduleYamlPath(dataFolder.toPath(), resource)
-        val existed = Files.isRegularFile(path)
-        val config = ConfigManager.ofModule(dataFolder.toPath(), resource)
-        if (!existed) {
-            config.setInt("bind-port", GIVEAWAY_METRICS_PORT)
-            config.saveStrict()
-        }
-        val metrics = ArcMetricsRuntime(
-            config = MetricsConfig(config),
-            identity = MetricsIdentity(
-                application = "ArcGiveaways",
-                platform = "paper",
-                serverName = settings.serverId,
-                version = pluginMeta.version,
-            ),
-            dataPath = dataFolder.toPath(),
-        )
-        try {
-            metrics.start()
-        } catch (failure: Throwable) {
-            runCatching(metrics::close)
-            logger.log(java.util.logging.Level.WARNING, "ArcGiveaways metrics failed to start; gameplay remains available", failure)
-            return
-        }
-        lifecycle.own(metrics)
-        lifecycle.own(RedisMetricsBinder(manager, metrics.registry))
-        lifecycle.tasks.runTimerAsync(0L, METRICS_SAMPLE_TICKS) {
-            metrics.recordSnapshot("giveaways", "product") {
-                listOf(
-                    MetricPoint("arc_giveaways_active_records", "Active or recovering giveaway records", activeService.activeLeaseCount().toDouble()),
-                    MetricPoint("arc_giveaways_backend_leases", "Observed live ArcGiveaways backends", activeService.backendLeaseCount().toDouble()),
-                    MetricPoint("arc_giveaways_participants", "Participants across cached giveaway records", activeService.participantCount().toDouble()),
-                    MetricPoint("arc_giveaways_recovery_backlog", "Durable inventory journals awaiting convergence", activeService.recoveryBacklog().toDouble()),
-                )
-            }
-        }
-    }
-
     private fun saveResourceIfMissing(path: String) {
         val target = dataFolder.toPath().resolve(path)
         if (!java.nio.file.Files.isRegularFile(target)) saveResource(path, false)
     }
 
     private companion object {
-        const val GIVEAWAY_METRICS_PORT = 9951
         const val HEALTH_REPORT_TICKS = 1_200L
-        const val METRICS_SAMPLE_TICKS = 100L
     }
 }

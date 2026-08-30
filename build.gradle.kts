@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "ru.ruscrafting"
-version = "0.1.10"
+version = "0.1.11"
 description = "Cross-server proximity giveaways for RusCrafting"
 
 val integrationTestSourceSet = sourceSets.create("integrationTest") {
@@ -27,7 +27,6 @@ dependencies {
     implementation(kotlin("stdlib"))
     implementation("ru.ruscrafting.arc:arc-core:2.1.3")
     implementation("ru.ruscrafting.arc:arc-core-logging:2.1.3")
-    implementation("ru.ruscrafting.arc:arc-core-metrics:2.1.3")
     implementation("ru.ruscrafting.arc:arc-core-paper:2.1.3")
     implementation("ru.ruscrafting.arc:arc-core-redis:2.1.3")
     implementation("com.google.code.gson:gson:2.11.0")
