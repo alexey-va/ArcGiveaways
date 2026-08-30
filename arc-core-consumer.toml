@@ -10,7 +10,6 @@ capabilities = [
   "integration-testing",
   "localized-text",
   "logging",
-  "metrics",
   "paper-testing",
   "redis-networking",
   "runtime",
