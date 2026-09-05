@@ -4,6 +4,7 @@ main: ru.ruscrafting.giveaways.paper.ArcGiveawaysPlugin
 api-version: '1.21.11'
 authors: [RusCrafting]
 description: Cross-server proximity giveaways
+softdepend: [LuckPerms]
 commands:
   giveaway:
     description: Player giveaways

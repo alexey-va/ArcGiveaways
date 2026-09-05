@@ -18,6 +18,7 @@ import ru.ruscrafting.giveaways.domain.GiveawayStatus
 class GiveawayMenu(
     private val service: GiveawayService,
     private val locale: GiveawayLocale,
+    private val escapeMode: (Player) -> GiveawayEscapeMode = { GiveawayEscapeMode.CLOSE },
     private val openDialog: (Player, PaperDialogScreen) -> Unit,
 ) {
     fun open(player: Player, requestedPage: Int = 0) {
@@ -35,7 +36,7 @@ class GiveawayMenu(
         if (page + 1 < pageCount) buttons += button("next", text(player, MessageKey.MENU_NEXT_LABEL)) { open(player, page + 1) }
         buttons += button("refresh", text(player, MessageKey.MENU_REFRESH_LABEL)) { open(player, page) }
         buttons += closingButton("help", text(player, MessageKey.MENU_HELP_LABEL)) { player.performCommand("giveaway help") }
-        openDialog(
+        show(
             player,
             PaperDialogScreen(
                 id = "arcgiveaways.menu",
@@ -87,7 +88,7 @@ class GiveawayMenu(
 
     private fun openStart(player: Player) {
         val held = player.inventory.itemInMainHand.takeUnless { it.type.isAir }
-        openDialog(
+        show(
             player,
             PaperDialogScreen(
                 id = "arcgiveaways.start",
@@ -125,7 +126,7 @@ class GiveawayMenu(
             player.sendMessage(blockedMessage(player, preview))
             return openStart(player)
         }
-        openDialog(
+        show(
             player,
             PaperDialogScreen(
                 id = "arcgiveaways.start-confirm",
@@ -212,6 +213,9 @@ class GiveawayMenu(
                 "seconds" to Component.text(preview.cooldownSeconds.toString()),
             ),
         )
+
+    private fun show(player: Player, screen: PaperDialogScreen) =
+        openDialog(player, screen.forEscapeMode(escapeMode(player)))
 
     private companion object {
         const val PAGE_SIZE = 6

@@ -2,6 +2,7 @@ package ru.ruscrafting.giveaways.paper
 
 import com.google.gson.Gson
 import kotlinx.coroutines.runBlocking
+import net.luckperms.api.LuckPerms
 import org.bukkit.plugin.java.JavaPlugin
 import org.slf4j.LoggerFactory
 import ru.arc.config.Config
@@ -84,7 +85,16 @@ class ArcGiveawaysPlugin : JavaPlugin() {
             ).also { lifecycle.own(it); it.start() }
             service = activeService
             val dialogRuntime = PaperDialogRuntime(this).also { lifecycle.own(it) }
-            val menu = GiveawayMenu(activeService, locale, dialogRuntime::open)
+            val luckPerms = runCatching {
+                server.servicesManager.getRegistration(LuckPerms::class.java)?.provider
+            }.getOrNull()
+            val escapePreference = LuckPermsGiveawayEscapePreference(luckPerms)
+            val menu = GiveawayMenu(
+                activeService,
+                locale,
+                escapeMode = escapePreference::mode,
+                openDialog = dialogRuntime::open,
+            )
             lifecycle.registerHealth("runtime") {
                 val redisReady = manager.isConnected()
                 RuntimeHealthContribution(
