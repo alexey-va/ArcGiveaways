@@ -1,6 +1,6 @@
 schema = 1
 platform = "paper"
-core_version = "2.1.3"
+core_version = "2.5.0"
 
 capabilities = [
   "backend-transfer",
