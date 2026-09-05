@@ -79,6 +79,7 @@ class GiveawayMenu(
                     "radius" to Component.text(record.radius.toInt().toString()),
                 ),
             ),
+            width = 230,
         ) {
             if (joined) service.follow(player, record.displayId()) else service.join(player, record.displayId())
         }
@@ -101,7 +102,7 @@ class GiveawayMenu(
                     ),
                 ),
                 buttons = listOf(
-                    contextButton("preview", text(player, MessageKey.MENU_PREVIEW_LABEL)) { context ->
+                    contextButton("preview", text(player, MessageKey.MENU_PREVIEW_LABEL), width = 230) { context ->
                         val amount = context.text(AMOUNT_INPUT).orEmpty().trim().toIntOrNull()
                         val preview = service.menuStartPreview(player, amount)
                         if (!preview.valid) {
@@ -164,21 +165,30 @@ class GiveawayMenu(
         button("back", text(player, MessageKey.MENU_BACK_LABEL), action = action)
 
     private fun contextButton(id: String, label: Component, action: (PaperDialogClickContext) -> Unit): PaperDialogButton =
-        PaperDialogButton(PaperDialogActionId.of(id), label, onClick = action)
+        contextButton(id, label, 150, action)
+
+    private fun contextButton(
+        id: String,
+        label: Component,
+        width: Int,
+        action: (PaperDialogClickContext) -> Unit,
+    ): PaperDialogButton = PaperDialogButton(PaperDialogActionId.of(id), label, width = width, onClick = action)
 
     private fun button(
         id: String,
         label: Component,
         tooltip: Component = Component.empty(),
+        width: Int = 150,
         action: () -> Unit,
-    ): PaperDialogButton = PaperDialogButton(PaperDialogActionId.of(id), label, tooltip, onClick = { action() })
+    ): PaperDialogButton = PaperDialogButton(PaperDialogActionId.of(id), label, tooltip, width = width, onClick = { action() })
 
     private fun closingButton(
         id: String,
         label: Component,
         tooltip: Component = Component.empty(),
+        width: Int = 150,
         action: () -> Unit,
-    ): PaperDialogButton = button(id, label, tooltip, action).copy(closeDialogBeforeAction = true)
+    ): PaperDialogButton = button(id, label, tooltip, width, action).copy(closeDialogBeforeAction = true)
 
     private fun text(player: Player, key: MessageKey, vararg values: Pair<String, String>): Component =
         locale.render(key, player, values.associate { (name, value) -> name to Component.text(value) })
