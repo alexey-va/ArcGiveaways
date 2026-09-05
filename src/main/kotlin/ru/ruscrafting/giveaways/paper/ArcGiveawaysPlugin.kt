@@ -15,6 +15,7 @@ import ru.arc.logging.LokiAttachTarget
 import ru.arc.logging.LokiInstallSpec
 import ru.arc.logging.paper.PaperLoggingPlatform
 import ru.arc.paper.network.BungeeBackendTransfer
+import ru.arc.paper.menu.PaperDialogRuntime
 import ru.arc.paper.runtime.PaperPluginRuntime
 import ru.arc.observability.RuntimeHealthContribution
 import ru.arc.observability.RuntimeHealthState
@@ -82,6 +83,8 @@ class ArcGiveawaysPlugin : JavaPlugin() {
                 backendDirectory,
             ).also { lifecycle.own(it); it.start() }
             service = activeService
+            val dialogRuntime = PaperDialogRuntime(this).also { lifecycle.own(it) }
+            val menu = GiveawayMenu(activeService, locale, dialogRuntime::open)
             lifecycle.registerHealth("runtime") {
                 val redisReady = manager.isConnected()
                 RuntimeHealthContribution(
@@ -99,7 +102,7 @@ class ArcGiveawaysPlugin : JavaPlugin() {
                     ),
                 )
             }
-            val command = GiveawayCommand(activeService, locale, ::reloadPlugin)
+            val command = GiveawayCommand(activeService, locale, ::reloadPlugin, openMenu = menu::open)
             requireNotNull(getCommand("giveaway")).apply { setExecutor(command); tabCompleter = command }
             server.pluginManager.registerEvents(GiveawayListener(requireNotNull(service)), this)
             manager.init()

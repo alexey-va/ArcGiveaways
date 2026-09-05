@@ -12,14 +12,23 @@ class GiveawayCommand(
     private val service: GiveawayService,
     private val locale: GiveawayLocale,
     private val reload: () -> Result<Unit>,
+    private val openMenu: (Player) -> Unit = {},
     private val qaReport: (String?) -> List<String> = service::qaReport,
 ) : CommandExecutor, TabCompleter {
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         if (args.isEmpty()) {
-            sender.sendMessage(locale.render(MessageKey.HELP, sender))
+            (sender as? Player)?.let(openMenu) ?: sender.sendMessage(locale.render(MessageKey.HELP, sender))
             return true
         }
         val subcommand = args[0].lowercase()
+        if (subcommand == "help") {
+            sender.sendMessage(locale.render(MessageKey.HELP, sender))
+            return true
+        }
+        if (subcommand == "menu") {
+            (sender as? Player)?.let(openMenu) ?: sender.sendMessage(locale.render(MessageKey.PLAYER_ONLY, sender))
+            return true
+        }
         if (subcommand == "reload" || subcommand == "qa") {
             if (!sender.hasPermission("arcgiveaways.admin")) {
                 sender.sendMessage(locale.render(MessageKey.NO_PERMISSION, sender))
@@ -69,7 +78,7 @@ class GiveawayCommand(
     override fun onTabComplete(sender: CommandSender, command: Command, alias: String, args: Array<out String>): List<String> {
         if (args.size == 1) {
             val available = buildList {
-                addAll(listOf("start", "join", "follow", "status", "cancel", "claim"))
+                addAll(listOf("menu", "help", "start", "join", "follow", "status", "cancel", "claim"))
                 if (sender.hasPermission("arcgiveaways.admin")) addAll(listOf("reload", "qa"))
             }
             return available.filter { it.startsWith(args[0], ignoreCase = true) }

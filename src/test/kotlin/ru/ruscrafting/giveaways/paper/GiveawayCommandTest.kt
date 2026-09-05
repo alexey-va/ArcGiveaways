@@ -5,8 +5,10 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import net.kyori.adventure.text.Component
 import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
+import org.bukkit.entity.Player
 import ru.ruscrafting.giveaways.config.GiveawayLocale
 
 class GiveawayCommandTest : StringSpec({
@@ -29,5 +31,26 @@ class GiveawayCommandTest : StringSpec({
         handled shouldBe true
         verify(exactly = 1) { sender.sendMessage("ARCGIVEAWAYS_QA status=ok server=survival records=1 active=1 journals=2") }
         verify(exactly = 1) { sender.sendMessage("ARCGIVEAWAYS_QA_JOURNAL id=bd624545 kind=REFUND status=PREPARED player=ONLINE state=AFTER changes=1") }
+    }
+
+    "root and menu open the native menu while help stays textual" {
+        val service = mockk<GiveawayService>(relaxed = true)
+        val locale = mockk<GiveawayLocale>(relaxed = true)
+        val player = mockk<Player>(relaxed = true)
+        val command = mockk<Command>()
+        var opened = 0
+        val handler = GiveawayCommand(
+            service,
+            locale,
+            { Result.success(Unit) },
+            openMenu = { opened += 1 },
+        )
+
+        handler.onCommand(player, command, "giveaway", emptyArray()) shouldBe true
+        handler.onCommand(player, command, "giveaway", arrayOf("menu")) shouldBe true
+        handler.onCommand(player, command, "giveaway", arrayOf("help")) shouldBe true
+
+        opened shouldBe 2
+        verify(exactly = 1) { player.sendMessage(any<Component>()) }
     }
 })

@@ -57,6 +57,24 @@ class GiveawayService(
     private val travel: GiveawayTravelPort = NativeGiveawayTravelPort,
     private val playerData: GiveawayPlayerDataPersistence = NativeGiveawayPlayerDataPersistence,
 ) : AutoCloseable {
+    data class MenuStartPreview(
+        val amount: Int,
+        val maximum: Int,
+        val itemKey: String,
+        val cooldownSeconds: Int = 0,
+        val block: MenuStartBlock? = null,
+    ) {
+        val valid: Boolean get() = block == null
+    }
+
+    enum class MenuStartBlock(val messageKey: MessageKey) {
+        BUSY(MessageKey.BUSY),
+        COOLDOWN(MessageKey.COOLDOWN),
+        EMPTY_HAND(MessageKey.EMPTY_HAND),
+        BAD_AMOUNT(MessageKey.BAD_AMOUNT),
+        ITEM_CHANGED(MessageKey.MENU_ITEM_CHANGED),
+    }
+
     private var engine = newEngine(settings)
     private val lifecycleTasks = LifecycleTaskScope()
     private val cache = ConcurrentHashMap<String, GiveawayRecord>()
@@ -150,6 +168,31 @@ class GiveawayService(
     fun activeRecords(): List<GiveawayRecord> =
         cache.values.filter { it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING }
             .sortedBy { it.drawAtMs }
+
+    fun menuStartPreview(player: Player, requestedAmount: Int?, expectedItem: ItemStack? = null): MenuStartPreview {
+        val held = player.inventory.itemInMainHand.takeUnless { it.type.isAir }
+        val maximum = minOf(held?.amount ?: 0, settings.maximumItemAmount)
+        val amount = requestedAmount ?: 0
+        val cooldownMillis = ((cooldowns[player.uniqueId] ?: 0L) - clockMs()).coerceAtLeast(0L)
+        val cooldownSeconds = ((cooldownMillis + 999L) / 1000L).toInt()
+        val block = when {
+            inventoryLocks.contains(player.uniqueId) -> MenuStartBlock.BUSY
+            cooldownSeconds > 0 -> MenuStartBlock.COOLDOWN
+            expectedItem != null && (held == null || !held.isSimilar(expectedItem) || held.amount < expectedItem.amount) -> MenuStartBlock.ITEM_CHANGED
+            held == null -> MenuStartBlock.EMPTY_HAND
+            amount !in 1..maximum -> MenuStartBlock.BAD_AMOUNT
+            else -> null
+        }
+        return MenuStartPreview(amount, maximum, held?.type?.key?.toString() ?: "minecraft:air", cooldownSeconds, block)
+    }
+
+    fun menuRadius(): Double = settings.radius
+
+    fun menuOpenSeconds(): Int = settings.openSeconds
+
+    fun menuRemainingSeconds(record: GiveawayRecord): Int = ceil((record.drawAtMs - clockMs()).coerceAtLeast(0L) / 1000.0).toInt()
+
+    fun menuItemName(item: ItemStack): Component = itemNames.displayName(item)
 
     /** Constant-time in-memory gauge safe for runtime health sampling. */
     fun recoveryBacklog(): Int = journals.size
