@@ -67,12 +67,12 @@ class GiveawayService(
         val valid: Boolean get() = block == null
     }
 
-    enum class MenuStartBlock(val messageKey: MessageKey) {
-        BUSY(MessageKey.BUSY),
-        COOLDOWN(MessageKey.COOLDOWN),
-        EMPTY_HAND(MessageKey.EMPTY_HAND),
-        BAD_AMOUNT(MessageKey.BAD_AMOUNT),
-        ITEM_CHANGED(MessageKey.MENU_ITEM_CHANGED),
+    enum class MenuStartBlock(val messageKey: MessageKey, val menuMessageKey: MessageKey) {
+        BUSY(MessageKey.BUSY, MessageKey.MENU_ERROR_BUSY),
+        COOLDOWN(MessageKey.COOLDOWN, MessageKey.MENU_ERROR_COOLDOWN),
+        EMPTY_HAND(MessageKey.EMPTY_HAND, MessageKey.MENU_ERROR_EMPTY_HAND),
+        BAD_AMOUNT(MessageKey.BAD_AMOUNT, MessageKey.MENU_ERROR_BAD_AMOUNT),
+        ITEM_CHANGED(MessageKey.MENU_ITEM_CHANGED, MessageKey.MENU_ERROR_ITEM_CHANGED),
     }
 
     private var engine = newEngine(settings)

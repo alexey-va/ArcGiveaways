@@ -6,6 +6,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import org.bukkit.Material
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
@@ -22,6 +23,57 @@ class GiveawayMenuTest : StringSpec({
     lateinit var paper: MockBukkitTestRuntime
     beforeSpec { paper = MockBukkitTestRuntime.open() }
     afterSpec { paper.close() }
+
+    "start menu shows an empty-hand error instead of only sending chat" {
+        val stack = ItemStack(Material.DIAMOND, 5)
+        val (player, inventory) = playerWith(stack)
+        var held: ItemStack? = stack
+        every { inventory.itemInMainHand } answers { held ?: ItemStack(Material.AIR) }
+        val service = mockk<GiveawayService>(relaxed = true)
+        val locale = locale()
+        val screens = mutableListOf<PaperDialogScreen>()
+        val menu = GiveawayMenu(service, locale) { _, screen -> screens += screen }
+        every { service.activeRecords() } returns emptyList()
+        every { service.menuStartPreview(player, 1) } returns GiveawayService.MenuStartPreview(
+            amount = 1, maximum = 0, itemKey = "minecraft:air", block = GiveawayService.MenuStartBlock.EMPTY_HAND,
+        )
+        every { locale.render(MessageKey.MENU_HELD_ITEM_EMPTY, player) } returns Component.text("In hand: empty")
+        every { locale.render(MessageKey.MENU_START_BODY, player, any()) } returns Component.text("start")
+        every { locale.render(MessageKey.MENU_ERROR_EMPTY_HAND, player, any()) } returns Component.text("Error: empty hand")
+        every { player.hasPermission("arcgiveaways.start") } returns true
+
+        menu.open(player)
+        click(screens.last().buttons.single { it.id.value == "start" }, player)
+        held = null
+        click(screens.last().buttons.single { it.id.value == "preview" }, player, mapOf("amount" to "1"))
+
+        PlainTextComponentSerializer.plainText().serialize(screens.last().body.last().text) shouldBe "Error: empty hand"
+        verify(exactly = 0) { service.startGiveaway(any(), any()) }
+    }
+
+    "start menu shows the held item and amount" {
+        val stack = ItemStack(Material.DIAMOND, 5)
+        val (player, _) = playerWith(stack)
+        val service = mockk<GiveawayService>(relaxed = true)
+        val locale = locale()
+        val screens = mutableListOf<PaperDialogScreen>()
+        val menu = GiveawayMenu(service, locale) { _, screen -> screens += screen }
+        val heldValues = io.mockk.slot<Map<String, Component>>()
+        val bodyValues = io.mockk.slot<Map<String, Component>>()
+        every { service.activeRecords() } returns emptyList()
+        every { service.menuItemName(stack) } returns Component.text("Diamond")
+        every { locale.render(MessageKey.MENU_HELD_ITEM, player, capture(heldValues)) } returns Component.text("held")
+        every { locale.render(MessageKey.MENU_START_BODY, player, capture(bodyValues)) } returns Component.text("start")
+        every { player.hasPermission("arcgiveaways.start") } returns true
+
+        menu.open(player)
+        click(screens.last().buttons.single { it.id.value == "start" }, player)
+
+        screens.last().inputs.single().initial shouldBe "5"
+        bodyValues.captured["held"]?.let { PlainTextComponentSerializer.plainText().serialize(it) } shouldBe "held"
+        PlainTextComponentSerializer.plainText().serialize(heldValues.captured.getValue("item")) shouldBe "Diamond"
+        PlainTextComponentSerializer.plainText().serialize(heldValues.captured.getValue("amount")) shouldBe "5"
+    }
 
     "preview rejects malformed input without mutating the held item" {
         val stack = ItemStack(Material.DIAMOND, 5)
@@ -69,6 +121,7 @@ class GiveawayMenuTest : StringSpec({
             if (confirmationChecks == 1) valid else changed
         }
         every { service.menuItemName(any()) } returns Component.text("Diamond")
+        every { locale.render(MessageKey.MENU_ERROR_ITEM_CHANGED, player, any()) } returns Component.text("Error: item changed")
         every { player.hasPermission("arcgiveaways.start") } returns true
         every { player.hasPermission("arcgiveaways.use") } returns true
 
@@ -83,6 +136,7 @@ class GiveawayMenuTest : StringSpec({
 
         verify(exactly = 0) { service.startGiveaway(any(), any()) }
         verify(exactly = 2) { service.menuStartPreview(player, 2, any()) }
+        PlainTextComponentSerializer.plainText().serialize(screens.last().body.last().text) shouldBe "Error: item changed"
     }
 
     "confirmation refuses a permission lost after opening the screen" {

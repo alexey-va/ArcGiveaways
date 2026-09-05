@@ -41,6 +41,10 @@ enum class MessageKey(val path: String) {
     MENU_CONFIRM_BODY("menu-confirm-body"), MENU_CONFIRM_LABEL("menu-confirm-label"), MENU_BACK_LABEL("menu-back-label"),
     MENU_NEXT_LABEL("menu-next-label"), MENU_PREVIOUS_LABEL("menu-previous-label"), MENU_STATUS_OPEN("menu-status-open"),
     MENU_STATUS_DRAWING("menu-status-drawing"), MENU_ITEM_CHANGED("menu-item-changed"),
+    MENU_HELD_ITEM("menu-held-item"), MENU_HELD_ITEM_EMPTY("menu-held-item-empty"),
+    MENU_ERROR_BUSY("menu-error-busy"), MENU_ERROR_COOLDOWN("menu-error-cooldown"),
+    MENU_ERROR_EMPTY_HAND("menu-error-empty-hand"), MENU_ERROR_BAD_AMOUNT("menu-error-bad-amount"),
+    MENU_ERROR_ITEM_CHANGED("menu-error-item-changed"),
 }
 
 class GiveawayLocale(

@@ -43,12 +43,15 @@ class GiveawayMenu(
                 title = text(player, MessageKey.MENU_TITLE),
                 body = listOf(
                     PaperDialogBody(
-                        text(
+                        textWithComponents(
                             player,
                             if (records.isEmpty()) MessageKey.MENU_BODY_EMPTY else MessageKey.MENU_BODY,
-                            "active" to records.size.toString(),
-                            "radius" to service.menuRadius().toString(),
-                            "duration" to service.menuOpenSeconds().toString(),
+                            mapOf(
+                                "active" to Component.text(records.size.toString()),
+                                "radius" to Component.text(service.menuRadius().toString()),
+                                "duration" to Component.text(service.menuOpenSeconds().toString()),
+                                "held" to heldItemSummary(player),
+                            ),
                         ),
                         width = 500,
                     ),
@@ -86,14 +89,30 @@ class GiveawayMenu(
         }
     }
 
-    private fun openStart(player: Player) {
+    private fun openStart(player: Player, error: GiveawayService.MenuStartPreview? = null) {
         val held = player.inventory.itemInMainHand.takeUnless { it.type.isAir }
+        val body = buildList {
+            add(PaperDialogBody(
+                textWithComponents(
+                    player,
+                    MessageKey.MENU_START_BODY,
+                    mapOf(
+                        "maximum" to Component.text((held?.amount ?: 0).toString()),
+                        "held" to heldItemSummary(player),
+                    ),
+                ),
+                500,
+            ))
+            error?.let { preview ->
+                if (preview.block != null) add(PaperDialogBody(menuBlockedMessage(player, preview), 500))
+            }
+        }
         show(
             player,
             PaperDialogScreen(
                 id = "arcgiveaways.start",
                 title = text(player, MessageKey.MENU_START_TITLE),
-                body = listOf(PaperDialogBody(text(player, MessageKey.MENU_START_BODY, "maximum" to (held?.amount ?: 0).toString()), width = 500)),
+                body = body,
                 inputs = listOf(
                     PaperDialogTextInput(
                         AMOUNT_INPUT,
@@ -107,8 +126,7 @@ class GiveawayMenu(
                         val amount = context.text(AMOUNT_INPUT).orEmpty().trim().toIntOrNull()
                         val preview = service.menuStartPreview(player, amount)
                         if (!preview.valid) {
-                            player.sendMessage(blockedMessage(player, preview))
-                            openStart(player)
+                            openStart(player, preview)
                         } else {
                             val selected = player.inventory.itemInMainHand.clone().also { it.amount = preview.amount }
                             openConfirm(player, preview.amount, selected)
@@ -123,8 +141,7 @@ class GiveawayMenu(
     private fun openConfirm(player: Player, amount: Int, expectedItem: org.bukkit.inventory.ItemStack) {
         val preview = service.menuStartPreview(player, amount, expectedItem)
         if (!preview.valid) {
-            player.sendMessage(blockedMessage(player, preview))
-            return openStart(player)
+            return openStart(player, preview)
         }
         show(
             player,
@@ -146,10 +163,9 @@ class GiveawayMenu(
                         if (!player.hasPermission("arcgiveaways.use") || !player.hasPermission("arcgiveaways.start")) {
                             player.sendMessage(locale.render(MessageKey.NO_PERMISSION, player))
                         } else {
-                        val latest = service.menuStartPreview(player, amount, expectedItem)
+                            val latest = service.menuStartPreview(player, amount, expectedItem)
                             if (!latest.valid) {
-                                player.sendMessage(blockedMessage(player, latest))
-                                openStart(player)
+                                openStart(player, latest)
                             } else {
                                 player.closeDialog()
                                 service.startGiveaway(player, latest.amount)
@@ -197,6 +213,16 @@ class GiveawayMenu(
     private fun textWithComponents(player: Player, key: MessageKey, values: Map<String, Component>): Component =
         locale.render(key, player, values)
 
+    private fun heldItemSummary(player: Player): Component {
+        val held = player.inventory.itemInMainHand.takeUnless { it.type.isAir }
+            ?: return locale.render(MessageKey.MENU_HELD_ITEM_EMPTY, player)
+        return locale.render(
+            MessageKey.MENU_HELD_ITEM,
+            player,
+            mapOf("item" to service.menuItemName(held), "amount" to Component.text(held.amount.toString())),
+        )
+    }
+
     private fun activeItem(materialKey: String): Component =
         Material.matchMaterial(materialKey)?.let { Component.translatable(it.translationKey()) }
             ?: Component.text(materialKey.substringAfter(':').replace('_', ' '))
@@ -204,9 +230,9 @@ class GiveawayMenu(
     private fun statusText(player: Player, status: GiveawayStatus): Component =
         locale.render(if (status == GiveawayStatus.DRAWING) MessageKey.MENU_STATUS_DRAWING else MessageKey.MENU_STATUS_OPEN, player)
 
-    private fun blockedMessage(player: Player, preview: GiveawayService.MenuStartPreview): Component =
+    private fun menuBlockedMessage(player: Player, preview: GiveawayService.MenuStartPreview): Component =
         locale.render(
-            preview.block!!.messageKey,
+            preview.block!!.menuMessageKey,
             player,
             mapOf(
                 "maximum" to Component.text(preview.maximum.toString()),
