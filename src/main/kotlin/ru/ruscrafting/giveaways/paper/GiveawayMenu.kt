@@ -18,9 +18,11 @@ import ru.ruscrafting.giveaways.domain.GiveawayStatus
 class GiveawayMenu(
     private val service: GiveawayService,
     private val locale: GiveawayLocale,
-    private val escapeMode: (Player) -> GiveawayEscapeMode = { GiveawayEscapeMode.CLOSE },
-    private val openDialog: (Player, PaperDialogScreen) -> Unit,
+    private val closeDialog: (Player) -> Unit = Player::closeDialog,
+    private val escapeMode: (Player) -> GiveawayEscapeMode = { GiveawayEscapeMode.BACK },
+    private val openDialog: (Player, PaperDialogScreen, (() -> Unit)?, () -> Unit) -> Unit,
 ) {
+
     fun open(player: Player, requestedPage: Int = 0) {
         val records = service.activeRecords()
         val pageCount = (records.size + PAGE_SIZE - 1) / PAGE_SIZE
@@ -34,7 +36,6 @@ class GiveawayMenu(
         }
         if (page > 0) buttons += button("previous", text(player, MessageKey.MENU_PREVIOUS_LABEL)) { open(player, page - 1) }
         if (page + 1 < pageCount) buttons += button("next", text(player, MessageKey.MENU_NEXT_LABEL)) { open(player, page + 1) }
-        buttons += button("refresh", text(player, MessageKey.MENU_REFRESH_LABEL)) { open(player, page) }
         buttons += closingButton("help", text(player, MessageKey.MENU_HELP_LABEL)) { player.performCommand("giveaway help") }
         show(
             player,
@@ -53,15 +54,13 @@ class GiveawayMenu(
                                 "held" to heldItemSummary(player),
                             ),
                         ),
-                        width = 500,
+                        width = 468,
                     ),
                 ),
                 buttons = buttons,
-                exitButton = button("back", text(player, MessageKey.MENU_BACK_LABEL)) {
-                    player.performCommand("arc help activities")
-                },
                 columns = 2,
             ),
+            reopen = { open(player, page) },
         )
     }
 
@@ -89,7 +88,7 @@ class GiveawayMenu(
         }
     }
 
-    private fun openStart(player: Player, error: GiveawayService.MenuStartPreview? = null) {
+    private fun openStart(player: Player, error: GiveawayService.MenuStartPreview? = null, initial: String? = null) {
         val held = player.inventory.itemInMainHand.takeUnless { it.type.isAir }
         val body = buildList {
             add(PaperDialogBody(
@@ -101,10 +100,10 @@ class GiveawayMenu(
                         "held" to heldItemSummary(player),
                     ),
                 ),
-                500,
+                468,
             ))
             error?.let { preview ->
-                if (preview.block != null) add(PaperDialogBody(menuBlockedMessage(player, preview), 500))
+                if (preview.block != null) add(PaperDialogBody(menuBlockedMessage(player, preview), 468))
             }
         }
         show(
@@ -117,23 +116,24 @@ class GiveawayMenu(
                     PaperDialogTextInput(
                         AMOUNT_INPUT,
                         text(player, MessageKey.MENU_AMOUNT_LABEL),
-                        initial = held?.amount?.toString() ?: "1",
+                        initial = initial ?: held?.amount?.toString() ?: "1",
+                        width = 468,
                         maxLength = 4,
                     ),
                 ),
                 buttons = listOf(
                     contextButton("preview", text(player, MessageKey.MENU_PREVIEW_LABEL), width = 230) { context ->
-                        val amount = context.text(AMOUNT_INPUT).orEmpty().trim().toIntOrNull()
+                        val submitted = context.text(AMOUNT_INPUT).orEmpty().trim()
+                        val amount = submitted.toIntOrNull()
                         val preview = service.menuStartPreview(player, amount)
                         if (!preview.valid) {
-                            openStart(player, preview)
+                            openStart(player, preview, submitted)
                         } else {
                             val selected = player.inventory.itemInMainHand.clone().also { it.amount = preview.amount }
                             openConfirm(player, preview.amount, selected)
                         }
                     },
                 ),
-                exitButton = backButton(player) { open(player) },
             ),
         )
     }
@@ -155,7 +155,7 @@ class GiveawayMenu(
                             MessageKey.MENU_CONFIRM_BODY,
                             mapOf("item" to service.menuItemName(expectedItem), "amount" to Component.text(amount.toString())),
                         ),
-                        width = 500,
+                        width = 468,
                     ),
                 ),
                 buttons = listOf(
@@ -167,22 +167,19 @@ class GiveawayMenu(
                             if (!latest.valid) {
                                 openStart(player, latest)
                             } else {
-                                player.closeDialog()
+                                closeDialog(player)
                                 service.startGiveaway(player, latest.amount)
                             }
                         }
                     },
                 ),
-                exitButton = backButton(player) { openStart(player) },
             ),
+            reopen = { openConfirm(player, amount, expectedItem) },
         )
     }
 
-    private fun backButton(player: Player, action: () -> Unit): PaperDialogButton =
-        button("back", text(player, MessageKey.MENU_BACK_LABEL), action = action)
-
     private fun contextButton(id: String, label: Component, action: (PaperDialogClickContext) -> Unit): PaperDialogButton =
-        contextButton(id, label, 150, action)
+        contextButton(id, label, 230, action)
 
     private fun contextButton(
         id: String,
@@ -195,7 +192,7 @@ class GiveawayMenu(
         id: String,
         label: Component,
         tooltip: Component = Component.empty(),
-        width: Int = 150,
+        width: Int = 230,
         action: () -> Unit,
     ): PaperDialogButton = PaperDialogButton(PaperDialogActionId.of(id), label, tooltip, width = width, onClick = { action() })
 
@@ -203,7 +200,7 @@ class GiveawayMenu(
         id: String,
         label: Component,
         tooltip: Component = Component.empty(),
-        width: Int = 150,
+        width: Int = 230,
         action: () -> Unit,
     ): PaperDialogButton = button(id, label, tooltip, width, action).copy(closeDialogBeforeAction = true)
 
@@ -240,8 +237,16 @@ class GiveawayMenu(
             ),
         )
 
-    private fun show(player: Player, screen: PaperDialogScreen) =
-        openDialog(player, screen.forEscapeMode(escapeMode(player)))
+    private fun show(
+        player: Player,
+        screen: PaperDialogScreen,
+        reopen: (() -> Unit)? = null,
+        onDismiss: () -> Unit = {},
+    ) {
+        val footer = button("back", text(player, if (escapeMode(player) == GiveawayEscapeMode.CLOSE)
+            MessageKey.MENU_CLOSE_LABEL else MessageKey.MENU_BACK_LABEL), width = 200) {}
+        openDialog(player, screen.copy(exitButton = footer), reopen, onDismiss)
+    }
 
     private companion object {
         const val PAGE_SIZE = 6

@@ -50,3 +50,9 @@ The Redis/Testcontainers integration suite runs in CI; local development uses
 the unit and MockBukkit suite above.
 
 The deployable artifact is `build/libs/ArcGiveaways-0.1.10.jar`.
+
+Native menus use the ArcCore 2.7.4 shared dialog history. Commands start a
+new flow; Back returns to the actual prior screen and preserves amount drafts.
+Only the saved `arc-menu-escape=close` preference closes the complete flow.
+Confirmations keep the selected prize and revalidate it immediately before
+starting; menu navigation never reserves a prize.

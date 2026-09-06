@@ -32,7 +32,7 @@ class GiveawayMenuTest : StringSpec({
         val service = mockk<GiveawayService>(relaxed = true)
         val locale = locale()
         val screens = mutableListOf<PaperDialogScreen>()
-        val menu = GiveawayMenu(service, locale) { _, screen -> screens += screen }
+        val menu = GiveawayMenu(service, locale) { _, screen, _, _ -> screens += screen }
         every { service.activeRecords() } returns emptyList()
         every { service.menuStartPreview(player, 1) } returns GiveawayService.MenuStartPreview(
             amount = 1, maximum = 0, itemKey = "minecraft:air", block = GiveawayService.MenuStartBlock.EMPTY_HAND,
@@ -57,7 +57,7 @@ class GiveawayMenuTest : StringSpec({
         val service = mockk<GiveawayService>(relaxed = true)
         val locale = locale()
         val screens = mutableListOf<PaperDialogScreen>()
-        val menu = GiveawayMenu(service, locale) { _, screen -> screens += screen }
+        val menu = GiveawayMenu(service, locale) { _, screen, _, _ -> screens += screen }
         val heldValues = io.mockk.slot<Map<String, Component>>()
         val bodyValues = io.mockk.slot<Map<String, Component>>()
         every { service.activeRecords() } returns emptyList()
@@ -81,7 +81,7 @@ class GiveawayMenuTest : StringSpec({
         val service = mockk<GiveawayService>(relaxed = true)
         val locale = locale()
         val screens = mutableListOf<PaperDialogScreen>()
-        val menu = GiveawayMenu(service, locale) { _, screen -> screens += screen }
+        val menu = GiveawayMenu(service, locale) { _, screen, _, _ -> screens += screen }
         every { service.activeRecords() } returns emptyList()
         every { service.menuStartPreview(player, null, any()) } returns GiveawayService.MenuStartPreview(
             amount = 0,
@@ -98,6 +98,7 @@ class GiveawayMenuTest : StringSpec({
         start.buttons.single { it.id.value == "preview" }.closeDialogBeforeAction shouldBe false
         click(start.buttons.single { it.id.value == "preview" }, player, mapOf("amount" to "oops"))
 
+        screens.last().inputs.single().initial shouldBe "oops"
         stack.amount shouldBe 5
         verify(exactly = 1) { service.menuStartPreview(player, null, any()) }
         verify(exactly = 0) { service.startGiveaway(any(), any()) }
@@ -109,7 +110,7 @@ class GiveawayMenuTest : StringSpec({
         val service = mockk<GiveawayService>(relaxed = true)
         val locale = locale()
         val screens = mutableListOf<PaperDialogScreen>()
-        val menu = GiveawayMenu(service, locale) { _, screen -> screens += screen }
+        val menu = GiveawayMenu(service, locale) { _, screen, _, _ -> screens += screen }
         val valid = GiveawayService.MenuStartPreview(2, 5, "minecraft:diamond")
         val changed = valid.copy(block = GiveawayService.MenuStartBlock.ITEM_CHANGED)
         every { service.activeRecords() } returns emptyList()
@@ -139,12 +140,35 @@ class GiveawayMenuTest : StringSpec({
         PlainTextComponentSerializer.plainText().serialize(screens.last().body.last().text) shouldBe "Error: item changed"
     }
 
+    "history refreshes root data and keeps form drafts under Core ownership" {
+        val (player, _) = playerWith(ItemStack(Material.DIAMOND, 5))
+        val service = mockk<GiveawayService>(relaxed = true)
+        every { service.activeRecords() } returns emptyList()
+        every { player.hasPermission("arcgiveaways.start") } returns true
+        val screens = mutableListOf<PaperDialogScreen>()
+        val reopeners = mutableListOf<(() -> Unit)?>()
+        val menu = GiveawayMenu(service, locale()) { _, screen, reopen, _ ->
+            screens += screen; reopeners += reopen
+        }
+        menu.open(player)
+        val restore = requireNotNull(reopeners.last())
+        click(screens.last().buttons.single { it.id.value == "start" }, player)
+        reopeners.last() shouldBe null
+        restore()
+        verify(exactly = 2) { service.activeRecords() }
+        screens.last().id shouldBe "arcgiveaways.menu"
+        screens.forEach {
+            it.exitButton!!.width shouldBe 200
+            it.buttons.any { button -> button.id.value in setOf("refresh", "back", "close") } shouldBe false
+        }
+    }
+
     "confirmation refuses a permission lost after opening the screen" {
         val stack = ItemStack(Material.DIAMOND, 5)
         val (player, _) = playerWith(stack)
         val service = mockk<GiveawayService>(relaxed = true)
         val screens = mutableListOf<PaperDialogScreen>()
-        val menu = GiveawayMenu(service, locale()) { _, screen -> screens += screen }
+        val menu = GiveawayMenu(service, locale()) { _, screen, _, _ -> screens += screen }
         every { service.activeRecords() } returns emptyList()
         every { service.menuStartPreview(player, 2, any()) } returns GiveawayService.MenuStartPreview(2, 5, "minecraft:diamond")
         every { service.menuItemName(any()) } returns Component.text("Diamond")

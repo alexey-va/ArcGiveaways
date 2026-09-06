@@ -92,8 +92,17 @@ class ArcGiveawaysPlugin : JavaPlugin() {
             val menu = GiveawayMenu(
                 activeService,
                 locale,
+                closeDialog = dialogRuntime::close,
                 escapeMode = escapePreference::mode,
-                openDialog = dialogRuntime::open,
+                openDialog = { player, screen, reopen, onDismiss ->
+                    dialogRuntime.open(
+                        player,
+                        screen,
+                        reopen,
+                        onDismiss,
+                        escapePreference.mode(player) == GiveawayEscapeMode.CLOSE,
+                    )
+                },
             )
             lifecycle.registerHealth("runtime") {
                 val redisReady = manager.isConnected()
@@ -112,7 +121,15 @@ class ArcGiveawaysPlugin : JavaPlugin() {
                     ),
                 )
             }
-            val command = GiveawayCommand(activeService, locale, ::reloadPlugin, openMenu = menu::open)
+            val command = GiveawayCommand(
+                activeService,
+                locale,
+                ::reloadPlugin,
+                openMenu = { player ->
+                    dialogRuntime.beginFlow(player)
+                    menu.open(player)
+                },
+            )
             requireNotNull(getCommand("giveaway")).apply { setExecutor(command); tabCompleter = command }
             server.pluginManager.registerEvents(GiveawayListener(requireNotNull(service)), this)
             manager.init()
