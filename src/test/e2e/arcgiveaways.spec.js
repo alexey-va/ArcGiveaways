@@ -94,3 +94,34 @@ test('the only eligible participant wins and cannot claim the delivered prize tw
   assert.equal(diamonds(participant), 1);
   assert.equal(diamonds(player), 0);
 });
+
+test('a full-inventory winner reconnects, retries the player claim, and receives one prize', async ({ player, createPlayer, signal }) => {
+  const participant = await createPlayer({ username: 'GiveawayRetry' });
+  await startGiveaway(player, signal);
+  const id = await activeId(participant);
+  participant.chat(`/giveaway join ${id}`);
+  await expect(participant).toHaveReceivedMessage('You joined.');
+
+  await participant.giveItem('dirt', 2304);
+  await waitUntil(() => participant.bot.inventory.emptySlotCount() === 0, {
+    signal,
+    message: 'Winner inventory was not full before the draw',
+  });
+  assert.equal(participant.bot.inventory.items().filter((item) => item.name === 'dirt').reduce((sum, item) => sum + item.count, 0), 2304);
+
+  await expect(participant).toHaveReceivedMessage('Free some inventory space.', { timeout: 70000 });
+  await expect(participant).toHaveReceivedMessage(`Winner — ${participant.username}`);
+  await participant.rejoin();
+  assert.equal(participant.bot.inventory.emptySlotCount(), 0);
+
+  participant.chat('/giveaway claim');
+  await expect(participant).toHaveReceivedMessage('Checking the pending delivery…');
+  await participant.executeAndSync(`minecraft:clear ${participant.username}`);
+  participant.chat('/giveaway claim');
+  await expect(participant).toHaveReceivedMessage('The item was delivered to your inventory.');
+  await waitUntil(() => diamonds(participant) === 1, { signal });
+  participant.chat('/giveaway claim');
+  await expect(participant).toHaveReceivedMessage('No prize or refund is pending.');
+  assert.equal(diamonds(participant), 1);
+  assert.equal(diamonds(player), 0);
+});

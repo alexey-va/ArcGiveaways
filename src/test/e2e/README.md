@@ -16,6 +16,9 @@ eligible participant. Rejoining preserves a single registration; the winner rece
 exactly one diamond and a repeated claim creates no item or host refund. Hosts
 lose OP after permission setup; IDs come from real command completion. The draw
 uses the production 45-second registration and 6-second drawing durations.
+The full-inventory winner case fills all 36 storage slots, waits for the real
+pending-delivery state, reconnects, retries `/giveaway claim`, frees the inventory
+through the fixture command path, and proves exactly one prize is delivered.
 
 The fixture fixes the locale to English and disables only scene particles:
 the pinned bot protocol raises `PartialReadError` while decoding Paper dust
