@@ -893,6 +893,10 @@ class GiveawayService(
                 }
                 repository.releaseHost(record.hostId, record.id)
                 if (kind == JournalKind.PRIZE) {
+                    ArcProductTelemetryBridge.itemGranted(
+                        player.uniqueId,
+                        "giveaway:${record.id}:${player.uniqueId}",
+                    )
                     player.sendMessage(locale.render(MessageKey.DELIVERED, player))
                     celebrateWinner(player, record)
                 }
