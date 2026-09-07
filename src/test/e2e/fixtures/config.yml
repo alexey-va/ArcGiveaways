@@ -3,3 +3,10 @@ redis:
   import-arc-credentials: false
 cross-server:
   allowed-origins: [e2e]
+locale:
+  default: en
+  use-client-locale: false
+# The pinned Mineflayer protocol cannot decode this Paper build's dust particles.
+# Item escrow, eligibility, drawing and delivery are exercised with real effects otherwise.
+effects:
+  particles: false
