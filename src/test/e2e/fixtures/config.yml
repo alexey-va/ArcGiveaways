@@ -1,0 +1,5 @@
+server-id: e2e
+redis:
+  import-arc-credentials: false
+cross-server:
+  allowed-origins: [e2e]
