@@ -24,10 +24,12 @@ giveaways.
   after restart. Never retry an ambiguous inventory mutation blindly.
 - All player text belongs in `lang/ru.yml` and `lang/en.yml`; locale keys remain
   identical and untrusted names use non-parsing placeholders.
-- Build and test locally with `./gradlew clean test shadowJar`; the disposable
-  Redis `integrationTest` runs in CI, not on the owner's workstation. Set
-  `RUSCRAFTING_OPS_ROOT=/absolute/path/to/ruscrafting-ops` to include tests
-  that verify tracked runtime profiles.
+- On a developer workstation run `./gradlew shadowJar`. Run a focused unit test
+  with `./gradlew test --tests '<fully-qualified-test-pattern>' shadowJar` when
+  the change needs it. Full `clean check shadowJar` verification, including the
+  disposable Redis `integrationTest`, is opt-in and normally owned by CI. Set
+  `RUSCRAFTING_OPS_ROOT=/absolute/path/to/ruscrafting-ops` only when checking
+  tracked runtime profiles.
 
 ## Git publication authorization
 

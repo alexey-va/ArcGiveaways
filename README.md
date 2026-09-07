@@ -43,11 +43,13 @@ scales the whole show down from `1.0`, while `effects.particles` and
 ## Build
 
 ```bash
-./gradlew clean test shadowJar
+./gradlew shadowJar
 ```
 
-The Redis/Testcontainers integration suite runs in CI; local development uses
-the unit and MockBukkit suite above.
+For a focused change, run the relevant unit test explicitly, for example
+`./gradlew test --tests '*GiveawayServiceMockBukkitTest' shadowJar`. Full `clean check shadowJar`
+verification, including the Redis/Testcontainers integration suite, is opt-in
+and normally runs in CI.
 
 The deployable artifact is `build/libs/ArcGiveaways-0.1.10.jar`.
 
