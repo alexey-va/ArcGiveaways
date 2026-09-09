@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "ru.ruscrafting"
-version = "0.1.13"
+version = "0.1.14"
 description = "Cross-server proximity giveaways for RusCrafting"
 
 val integrationTestSourceSet = sourceSets.create("integrationTest") {
@@ -50,6 +50,7 @@ dependencies {
     implementation("ru.ruscrafting.arc:arc-core-menu:2.7.5")
     implementation("ru.ruscrafting.arc:arc-core-paper-menu:2.7.5")
     implementation("ru.ruscrafting.arc:arc-core-redis:2.7.5")
+    compileOnly("ru.ruscrafting.arc:arc-core-paper-api:2.7.6")
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
@@ -59,6 +60,7 @@ dependencies {
     testImplementation("io.kotest:kotest-assertions-core:6.0.7")
     testImplementation("io.mockk:mockk:1.14.7")
     testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:2.7.5")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-api:2.7.6")
     testImplementation("ru.ruscrafting.arc:arc-core-testing:2.7.5")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     "integrationTestImplementation"(sourceSets.test.get().output)
