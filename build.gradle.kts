@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "ru.ruscrafting"
-version = "0.1.16"
+version = "0.1.17"
 description = "Cross-server proximity giveaways for RusCrafting"
 
 val integrationTestSourceSet = sourceSets.create("integrationTest") {

@@ -205,8 +205,14 @@ private fun click(
     player: Player,
     values: Map<String, String> = emptyMap(),
 ) {
-    val constructor = PaperDialogClickContext::class.java.declaredConstructors.first { it.parameterTypes.size >= 2 }.apply { isAccessible = true }
-    val resolver: (PaperDialogInputId) -> String? = { values.values.firstOrNull() }
-    val context = constructor.newInstance(player, resolver)
-    button.onClick.handle(context as PaperDialogClickContext)
+    val context = mockk<PaperDialogClickContext>()
+    every { context.player } returns player
+    every { context.text(any()) } returns null
+    every { context.number(any()) } returns null
+    values.forEach { (id, value) ->
+        val inputId = PaperDialogInputId.of(id)
+        every { context.text(inputId) } returns value
+        every { context.number(inputId) } returns value.toFloatOrNull()
+    }
+    button.onClick.handle(context)
 }

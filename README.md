@@ -51,7 +51,7 @@ For a focused change, run the relevant unit test explicitly, for example
 verification, including the Redis/Testcontainers integration suite, is opt-in
 and normally runs in CI.
 
-The deployable artifact is `build/libs/ArcGiveaways-0.1.16.jar`.
+The deployable artifact is `build/libs/ArcGiveaways-0.1.17.jar`.
 
 Native menus use the ArcCore 2.7.9 shared dialog history. Commands start a
 new flow; Back returns to the actual prior screen and preserves amount drafts.
