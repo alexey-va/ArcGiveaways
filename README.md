@@ -51,9 +51,9 @@ For a focused change, run the relevant unit test explicitly, for example
 verification, including the Redis/Testcontainers integration suite, is opt-in
 and normally runs in CI.
 
-The deployable artifact is `build/libs/ArcGiveaways-0.1.10.jar`.
+The deployable artifact is `build/libs/ArcGiveaways-0.1.16.jar`.
 
-Native menus use the ArcCore 2.7.4 shared dialog history. Commands start a
+Native menus use the ArcCore 2.7.9 shared dialog history. Commands start a
 new flow; Back returns to the actual prior screen and preserves amount drafts.
 Only the saved `arc-menu-escape=close` preference closes the complete flow.
 Confirmations keep the selected prize and revalidate it immediately before
