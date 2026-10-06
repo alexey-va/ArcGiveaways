@@ -53,7 +53,7 @@ and normally runs in CI.
 
 The deployable artifact is `build/libs/ArcGiveaways-0.1.17.jar`.
 
-Native menus use the ArcCore 2.7.17 shared dialog history. Commands start a
+Native menus use the ArcCore 2.7.18 shared dialog history. Commands start a
 new flow; Back returns to the actual prior screen and preserves amount drafts.
 Only the saved `arc-menu-escape=close` preference closes the complete flow.
 Confirmations keep the selected prize and revalidate it immediately before
