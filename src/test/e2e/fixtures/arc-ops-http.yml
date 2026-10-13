@@ -1,0 +1,2 @@
+# ARC's isolated profile registers OpsHttp; keep its network listener off in E2E.
+enabled: false

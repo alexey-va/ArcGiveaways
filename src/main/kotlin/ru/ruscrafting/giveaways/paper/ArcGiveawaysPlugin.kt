@@ -1,10 +1,8 @@
 package ru.ruscrafting.giveaways.paper
 
 import com.google.gson.Gson
-import kotlinx.coroutines.runBlocking
 import net.luckperms.api.LuckPerms
 import org.bukkit.plugin.java.JavaPlugin
-import org.slf4j.LoggerFactory
 import ru.arc.config.Config
 import ru.arc.config.ConfigManager
 import ru.arc.core.PaperArcRuntime
@@ -17,11 +15,10 @@ import ru.arc.logging.LokiInstallSpec
 import ru.arc.logging.paper.PaperLoggingPlatform
 import ru.arc.paper.network.BungeeBackendTransfer
 import ru.arc.paper.menu.PaperDialogRuntime
+import ru.arc.paper.redis.PaperRedisClient
 import ru.arc.paper.runtime.PaperPluginRuntime
 import ru.arc.observability.RuntimeHealthContribution
 import ru.arc.observability.RuntimeHealthState
-import ru.arc.redis.RedisManager
-import ru.arc.redis.ServerIdentity
 import ru.ruscrafting.giveaways.config.GiveawayConfig
 import ru.ruscrafting.giveaways.config.GiveawayLocale
 import ru.ruscrafting.giveaways.config.GiveawayRedisBootstrap
@@ -32,7 +29,6 @@ import ru.ruscrafting.giveaways.network.RedisGiveawayRepository
 import java.nio.file.Files
 
 class ArcGiveawaysPlugin : JavaPlugin() {
-    private var redis: RedisManager? = null
     private var service: GiveawayService? = null
     private var transfer: BungeeBackendTransfer? = null
     private lateinit var settings: GiveawayConfig
@@ -57,10 +53,11 @@ class ArcGiveawaysPlugin : JavaPlugin() {
             val redisConfig = GiveawayRedisBootstrap.load(dataFolder.toPath(), settings)
             locale = GiveawayLocale(dataFolder.toPath()) { settings }
             itemNames = RussianItemNames(dataFolder.toPath().resolveSibling("ARC").resolve("lang.json"), logger)
-            val manager = RedisManager(redisConfig.connection(), ServerIdentity { settings.serverId }, LoggerFactory.getLogger("ArcGiveaways.Redis"))
+            val manager = PaperRedisClient.open(this, redisConfig.connection(), settings.serverId)
             lifecycle.own(manager)
-            if (!manager.isConnected() || !runBlocking { manager.healthCheck() }) error("Redis connection is unavailable")
-            redis = manager
+            if (!manager.isConnected() || !manager.healthCheck().get(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                error("Redis connection is unavailable")
+            }
             val gson = Gson()
             val repository = RedisGiveawayRepository(manager, gson, settings.maximumParticipants)
             val backendDirectory = GiveawayBackendDirectory(
