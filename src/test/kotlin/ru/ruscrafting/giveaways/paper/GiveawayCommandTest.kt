@@ -10,8 +10,33 @@ import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
 import org.bukkit.entity.Player
 import ru.ruscrafting.giveaways.config.GiveawayLocale
+import ru.ruscrafting.giveaways.domain.GiveawayRecord
 
 class GiveawayCommandTest : StringSpec({
+    "completion respects participation start and admin permissions without player fallback" {
+        val record = mockk<GiveawayRecord> { every { displayId() } returns "ab12cd34" }
+        val service = mockk<GiveawayService> { every { activeRecords() } returns listOf(record) }
+        val handler = GiveawayCommand(service, mockk(), { Result.success(Unit) })
+        val command = mockk<Command>()
+        val player = mockk<Player>(relaxed = true)
+        every { player.hasPermission("arcgiveaways.use") } returns true
+
+        handler.onTabComplete(player, command, "giveaway", arrayOf("st")) shouldBe listOf("status")
+        every { player.hasPermission("arcgiveaways.start") } returns true
+        handler.onTabComplete(player, command, "giveaway", arrayOf("ST")) shouldBe listOf("start", "status")
+        handler.onTabComplete(player, command, "giveaway", arrayOf("JoIn", "AB")) shouldBe listOf("ab12cd34")
+        listOf(arrayOf("start", ""), arrayOf("status", ""), arrayOf("join", "ab12cd34", ""), arrayOf("unknown", ""), arrayOf("qa", "")).forEach {
+            handler.onTabComplete(player, command, "giveaway", it) shouldBe emptyList()
+        }
+        every { player.hasPermission("arcgiveaways.use") } returns false
+        handler.onTabComplete(player, command, "giveaway", arrayOf("")) shouldBe listOf("menu", "help")
+        handler.onTabComplete(player, command, "giveaway", arrayOf("join", "")) shouldBe emptyList()
+        val console = mockk<CommandSender>(relaxed = true)
+        every { console.hasPermission("arcgiveaways.admin") } returns true
+        handler.onTabComplete(console, command, "giveaway", arrayOf("")) shouldBe listOf("help", "reload", "qa")
+        handler.onTabComplete(console, command, "giveaway", arrayOf("qa", "ab")) shouldBe listOf("ab12cd34")
+    }
+
     "qa is console-safe and returns stable machine-readable lines" {
         val service = mockk<GiveawayService>()
         val locale = mockk<GiveawayLocale>()
