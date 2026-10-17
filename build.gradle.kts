@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     kotlin("jvm") version "2.3.0"
     id("com.gradleup.shadow") version "9.3.0"
@@ -16,6 +18,24 @@ val integrationTestSourceSet = sourceSets.create("integrationTest") {
 }
 
 val e2eArcJar = providers.gradleProperty("e2eArcJar").map { file(it) }
+val e2eArcCoreJar = providers.gradleProperty("e2eArcCoreJar").map { file(it) }
+val verifyE2eProvider = tasks.register("verifyE2eProvider") {
+    description = "Verifies the standalone provider used by the isolated Paper fixture."
+    inputs.file(e2eArcCoreJar).optional()
+    doLast {
+        val provider = requireNotNull(e2eArcCoreJar.orNull) {
+            "Supply -Pe2eArcCoreJar=/absolute/path/ArcCore-0.1.12.jar for the real Paper fixture"
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(provider.readBytes()).joinToString("") { "%02x".format(it) }
+        require(digest == "93158072f30ad3d7d5201acdf9036324841c4455844b4f1b650cfea0d8540502") {
+            "ArcCore 0.1.12 fixture checksum mismatch: $digest"
+        }
+    }
+}
+tasks.withType<me.drownek.plugwright.AbstractPlugwrightTask>().configureEach {
+    dependsOn(verifyE2eProvider)
+}
 
 plugwright {
     minecraftVersion.set("1.21.11")
@@ -32,6 +52,7 @@ plugwright {
     writeFiles {
         file("server.properties", projectDir.resolve("src/test/e2e/fixtures/server.properties"))
         e2eArcJar.orNull?.let { file("plugins/ARC.jar", it) }
+        e2eArcCoreJar.orNull?.let { file("plugins/ArcCore.jar", it) }
         file("plugins/ARC/modules/runtime.yml", projectDir.resolve("src/test/e2e/fixtures/arc-runtime.yml"))
         file("plugins/ARC/modules/ops-http.yml", projectDir.resolve("src/test/e2e/fixtures/arc-ops-http.yml"))
         file("plugins/ArcGiveaways/config.yml", projectDir.resolve("src/test/e2e/fixtures/config.yml").readText())

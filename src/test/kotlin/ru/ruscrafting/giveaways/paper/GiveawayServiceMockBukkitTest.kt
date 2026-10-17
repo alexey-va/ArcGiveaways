@@ -262,16 +262,22 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             fixture.repository.create(record).join() shouldBe true
             fixture.start()
             fixture.await("ambient scene") {
-                fixture.scenes().any { it.scene == GiveawayVisualScene.AMBIENT }
+                fixture.scenes().any { it.scene == GiveawayVisualScene.AMBIENT } &&
+                    fixture.fireworks().any { it.scene == GiveawayVisualScene.AMBIENT }
             }
 
             fixture.nowMs = record.drawAtMs - 5_000L
-            fixture.paper.performTicks(20)
-            fixture.scenes().any { it.scene == GiveawayVisualScene.COUNTDOWN } shouldBe true
+            fixture.await("countdown scene and firework") {
+                fixture.scenes().any { it.scene == GiveawayVisualScene.COUNTDOWN } &&
+                    fixture.fireworks().any { it.scene == GiveawayVisualScene.COUNTDOWN }
+            }
 
             fixture.nowMs = record.drawAtMs
             fixture.await("drawing phase") { fixture.repository.load(record.id).join()?.status == GiveawayStatus.DRAWING }
-            fixture.paper.performTicks(20)
+            fixture.await("drawing scene and firework") {
+                fixture.scenes().any { it.scene == GiveawayVisualScene.DRAWING } &&
+                    fixture.fireworks().any { it.scene == GiveawayVisualScene.DRAWING }
+            }
 
             val drawing = fixture.scenes().last { it.scene == GiveawayVisualScene.DRAWING }
             drawing.location.x shouldBe host.location.x
