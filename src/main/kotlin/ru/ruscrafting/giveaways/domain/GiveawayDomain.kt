@@ -22,6 +22,11 @@ data class ItemPayload(
     val bytesBase64: String,
     val sha256: String,
 ) {
+    @Transient @Volatile private var preparedNativeBytes: ByteArray? = null
+
+    /** Internal native decoder input; callers treat the array as read-only after worker validation. */
+    internal fun nativeBytes(): ByteArray = requireNotNull(preparedNativeBytes) { "Item payload was not validated" }
+
     fun decodedBytes(): ByteArray {
         require(materialKey.matches(RESOURCE_KEY)) { "Invalid item material key" }
         require(amount in 1..MAX_AMOUNT) { "Invalid item amount" }
@@ -29,6 +34,7 @@ data class ItemPayload(
         val bytes = Base64.getDecoder().decode(bytesBase64)
         require(bytes.size in 1..MAX_BYTES) { "Item payload is empty or too large" }
         require(sha256(bytes) == sha256) { "Item payload checksum mismatch" }
+        preparedNativeBytes = bytes.copyOf()
         return bytes
     }
 

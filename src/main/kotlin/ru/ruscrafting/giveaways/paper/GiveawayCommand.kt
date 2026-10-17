@@ -5,15 +5,16 @@ import org.bukkit.command.CommandExecutor
 import org.bukkit.command.CommandSender
 import org.bukkit.command.TabCompleter
 import org.bukkit.entity.Player
+import java.util.concurrent.CompletableFuture
 import ru.ruscrafting.giveaways.config.GiveawayLocale
 import ru.ruscrafting.giveaways.config.MessageKey
 
 class GiveawayCommand(
     private val service: GiveawayService,
     private val locale: GiveawayLocale,
-    private val reload: () -> Result<Unit>,
+    private val reload: () -> CompletableFuture<Result<Unit>>,
     private val openMenu: (Player) -> Unit = {},
-    private val qaReport: (String?) -> List<String> = service::qaReport,
+    private val qaReport: (CommandSender, String?) -> CompletableFuture<Unit> = service::sendQaReport,
 ) : CommandExecutor, TabCompleter {
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         if (args.isEmpty()) {
@@ -35,12 +36,12 @@ class GiveawayCommand(
                 return true
             }
             if (subcommand == "qa") {
-                qaReport(args.getOrNull(1)).forEach(sender::sendMessage)
+                qaReport(sender, args.getOrNull(1))
             } else {
-                reload().fold(
+                reload().thenAccept { result -> result.fold(
                     onSuccess = { sender.sendMessage(locale.render(MessageKey.RELOAD_OK, sender)) },
                     onFailure = { sender.sendMessage(locale.render(MessageKey.RELOAD_FAILED, sender, mapOf("reason" to locale.text(it.message ?: "unknown")))) },
-                )
+                ) }
             }
             return true
         }

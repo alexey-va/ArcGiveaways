@@ -52,12 +52,25 @@ class GiveawayLocale(
     dataRoot: Path,
     private val settings: () -> GiveawayConfig,
 ) {
-    private val russian: Config = ConfigManager.of(dataRoot, "lang/ru.yml")
-    private val english: Config = ConfigManager.of(dataRoot, "lang/en.yml")
-    private val renderer = LocalizedMiniMessage(
-        catalogs = mapOf("ru" to ConfigLocaleCatalog(russian), "en" to ConfigLocaleCatalog(english)),
-        defaultLocale = { settings().defaultLocale },
-    )
+    class Prepared internal constructor(internal val renderer: LocalizedMiniMessage)
+
+    @Volatile private var renderer = prepare(dataRoot).renderer
+
+    fun prepare(dataRoot: Path): Prepared {
+        val russian = Config(dataRoot, "lang/ru.yml")
+        val english = Config(dataRoot, "lang/en.yml")
+        mapOf("ru" to russian, "en" to english).forEach { (language, config) ->
+            MessageKey.entries.forEach { key ->
+                require(config.stringOrNull(key.path)?.isNotBlank() == true) { "Locale $language is missing ${key.path}" }
+            }
+        }
+        return Prepared(LocalizedMiniMessage(
+            catalogs = mapOf("ru" to ConfigLocaleCatalog(russian), "en" to ConfigLocaleCatalog(english)),
+            defaultLocale = { settings().defaultLocale },
+        ))
+    }
+
+    fun install(prepared: Prepared) { renderer = prepared.renderer }
 
     fun render(
         key: MessageKey,

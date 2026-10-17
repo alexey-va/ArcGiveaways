@@ -21,8 +21,11 @@ class RussianItemNames(
         reload()
     }
 
-    fun reload() {
-        translations = runCatching {
+    fun reload() { install(prepare()) }
+
+    fun install(prepared: Map<String, String>) { translations = prepared }
+
+    fun prepare(): Map<String, String> = runCatching {
             require(Files.isRegularFile(catalogPath)) { "catalog is missing: $catalogPath" }
             Files.newBufferedReader(catalogPath).use { reader ->
                 val type = object : TypeToken<Map<String, String>>() {}.type
@@ -31,7 +34,6 @@ class RussianItemNames(
         }.onFailure {
             logger.warning("Could not load the Russian item-name catalog; client translations will be used: ${it.message}")
         }.getOrDefault(emptyMap())
-    }
 
     fun displayName(item: ItemStack): Component {
         val effectiveName = presentation.effectiveItemName(item)

@@ -27,7 +27,8 @@ class GiveawayMenu(
         val records = service.activeRecords()
         val pageCount = (records.size + PAGE_SIZE - 1) / PAGE_SIZE
         val page = requestedPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-        val pageRecords = records.drop(page * PAGE_SIZE).take(PAGE_SIZE)
+        val from = page * PAGE_SIZE
+        val pageRecords = records.subList(from, minOf(from + PAGE_SIZE, records.size))
         val buttons = pageRecords.mapIndexed { index, record -> activeButton(player, index, record) }.toMutableList()
         if (player.hasPermission("arcgiveaways.start")) {
             buttons += button("start", text(player, MessageKey.MENU_START_LABEL), text(player, MessageKey.MENU_START_TOOLTIP)) {

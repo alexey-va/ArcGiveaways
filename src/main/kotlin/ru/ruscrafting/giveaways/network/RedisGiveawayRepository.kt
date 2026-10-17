@@ -15,6 +15,7 @@ import ru.ruscrafting.giveaways.domain.GiveawayParticipant
 import ru.ruscrafting.giveaways.domain.GiveawayRecord
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicReference
 
 enum class GiveawayEventType { CREATED, UPDATED, JOINED, TERMINAL, DELETED }
@@ -43,6 +44,7 @@ class RedisGiveawayRepository(
     private val redis: RedisOperations,
     private val gson: Gson = Gson(),
     private val maxParticipants: Int = GiveawayRecord.MAX_PARTICIPANTS,
+    private val worker: Executor = Executor(Runnable::run),
 ) {
     private val recordCodec = BoundedJsonCodec(
         gson = gson,
@@ -109,27 +111,28 @@ class RedisGiveawayRepository(
          }
      }
 
-    fun create(record: GiveawayRecord): CompletableFuture<Boolean> {
+    fun create(record: GiveawayRecord): CompletableFuture<Boolean> =
+        CompletableFuture.completedFuture(Unit).thenComposeAsync({
         val validated = record.validated(maxParticipants)
-        return records.update(validated.id) { current ->
+        records.update(validated.id) { current ->
             if (current == null) RedisHashDecision.Write(validated) else RedisHashDecision.Reject
         }.thenApply { result ->
             val created = result is RedisHashUpdateResult.Changed && result.before == null
             if (created) publish(GiveawayEventType.CREATED, validated)
             created
         }
-    }
+    }, worker)
 
     fun load(id: String): CompletableFuture<GiveawayRecord?> =
-        redis.loadMapEntries(RECORDS_KEY, id).thenApply { values -> values.firstOrNull()?.let(recordCodec::decode) }
+        redis.loadMapEntries(RECORDS_KEY, id).thenApplyAsync({ values -> values.firstOrNull()?.let(recordCodec::decode) }, worker)
 
     fun loadAll(): CompletableFuture<List<GiveawayRecord>> =
-        redis.loadMap(RECORDS_KEY).thenApply { values -> values.values.map(recordCodec::decode) }
+        redis.loadMap(RECORDS_KEY).thenApplyAsync({ values -> values.values.map(recordCodec::decode) }, worker)
 
     fun update(
         id: String,
         transition: (GiveawayRecord) -> GiveawayRecord?,
-    ): CompletableFuture<RepositoryUpdate> = records.update(id) { before ->
+    ): CompletableFuture<RepositoryUpdate> = CompletableFuture.completedFuture(Unit).thenComposeAsync({ records.update(id) { before ->
         if (before == null) return@update RedisHashDecision.Reject
         val proposed = transition(before) ?: return@update RedisHashDecision.Reject
         require(proposed.id == before.id && proposed.hostId == before.hostId) { "Giveaway identity cannot change" }
@@ -149,16 +152,16 @@ class RedisGiveawayRepository(
             is RedisHashUpdateResult.Unchanged -> RepositoryUpdate.Rejected(result.current)
             is RedisHashUpdateResult.Contended -> RepositoryUpdate.Contended
         }
-    }
+    } }, worker)
 
     fun delete(record: GiveawayRecord): CompletableFuture<Boolean> =
-        records.update(record.id) { current ->
+        CompletableFuture.completedFuture(Unit).thenComposeAsync({ records.update(record.id) { current ->
             if (current == record) RedisHashDecision.Delete else RedisHashDecision.Reject
         }.thenApply { result ->
             val deleted = result is RedisHashUpdateResult.Changed && result.after == null
             if (deleted) publish(GiveawayEventType.DELETED, record)
             deleted
-        }
+        } }, worker)
 
     fun claimHost(hostId: String, giveawayId: String): CompletableFuture<Boolean> =
         redis.compareAndSetMapEntry(HOSTS_KEY, canonicalUuid(hostId, "host"), null, canonicalUuid(giveawayId, "giveaway"))

@@ -3,6 +3,10 @@ package ru.ruscrafting.giveaways.paper
 import com.google.gson.Gson
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
+import ru.arc.core.BudgetedTaskQueue
+import ru.arc.paper.playerstate.NativePaperItemStackBinaryCodec
+import ru.arc.paper.playerstate.PaperItemStackBinaryCodec
+import java.util.concurrent.CompletableFuture
 import ru.arc.persistence.DurableRecordJournal
 import ru.arc.persistence.DurableAcknowledgementOutcome
 import ru.ruscrafting.giveaways.domain.ItemPayload
@@ -34,7 +38,60 @@ data class SlotChange(
     val slot: Int,
     val beforeBase64: String?,
     val afterBase64: String?,
-)
+) {
+    @Transient @Volatile private var prepared: RawSlotChange? = null
+
+    internal fun prepareBytes() {
+        fun decode(value: String?): ByteArray? = value?.let {
+            require(it.length <= ItemPayload.MAX_BASE64_CHARS)
+            Base64.getDecoder().decode(it).also { bytes -> require(bytes.size in 1..ItemPayload.MAX_BYTES) }
+        }
+        prepared = RawSlotChange(slot, decode(beforeBase64), decode(afterBase64))
+    }
+
+    internal fun beforeBytes(): ByteArray? = requireNotNull(prepared) { "Slot bytes were not prepared" }.before
+    internal fun afterBytes(): ByteArray? = requireNotNull(prepared) { "Slot bytes were not prepared" }.after
+
+    companion object {
+        internal fun fromRaw(raw: RawSlotChange): SlotChange = SlotChange(raw.slot,
+            raw.before?.let { Base64.getEncoder().encodeToString(it) },
+            raw.after?.let { Base64.getEncoder().encodeToString(it) },
+        ).also { it.prepared = raw }
+    }
+}
+
+internal data class RawSlotChange(val slot: Int, val before: ByteArray?, val after: ByteArray?)
+internal data class NativeSlotChange(val slot: Int, val before: ItemStack?, val after: ItemStack?)
+
+/** Native stacks stay here on Paper; only immutable byte DTOs cross to storage. */
+class InventoryPlanCapture internal constructor(private val changes: List<NativeSlotChange>) {
+    internal fun capture(
+        nativeWork: BudgetedTaskQueue,
+        isCurrent: () -> Boolean,
+        codec: PaperItemStackBinaryCodec = NativePaperItemStackBinaryCodec,
+    ): CompletableFuture<List<RawSlotChange>> {
+        val result = mutableListOf<RawSlotChange>()
+        var index = 0
+        var before: ByteArray? = null
+        var beforeCaptured = false
+        return nativeWork.submit(isCurrent) {
+            if (index >= changes.size) true else {
+                val change = changes[index]
+                if (!beforeCaptured) {
+                    before = change.before?.let(codec::encodeItem)
+                    beforeCaptured = true
+                } else {
+                    val after = change.after?.let(codec::encodeItem)
+                    result += RawSlotChange(change.slot, before, after)
+                    before = null
+                    beforeCaptured = false
+                    index++
+                }
+                false
+            }
+        }.thenApply { result }
+    }
+}
 
 data class InventoryJournalRecord(
     val formatVersion: Int = FORMAT_VERSION,
@@ -53,24 +110,29 @@ data class InventoryJournalRecord(
         require(changes.isNotEmpty() && changes.size <= 36)
         require(changes.map { it.slot }.distinct().size == changes.size)
         require(changes.all { it.slot in 0..35 })
-        changes.flatMap { listOfNotNull(it.beforeBase64, it.afterBase64) }.forEach { encoded ->
-            require(encoded.length <= ItemPayload.MAX_BASE64_CHARS)
-            ItemStack.deserializeBytes(Base64.getDecoder().decode(encoded))
-        }
+        changes.forEach(SlotChange::prepareBytes)
         item.decodedBytes()
         return this
     }
 
     companion object {
         const val FORMAT_VERSION = 1
+
+        /** Native validation belongs on Paper; persistent JSON validation above is worker safe. */
+        fun validateNative(change: SlotChange) {
+            change.beforeBytes()?.let(NativePaperItemStackBinaryCodec::decodeItem)
+            change.afterBytes()?.let(NativePaperItemStackBinaryCodec::decodeItem)
+        }
     }
 }
 
 class InventoryPlan private constructor(val changes: List<SlotChange>) {
+    internal fun observation(player: Player): InventoryPlanObservation = InventoryPlanObservation(player, changes)
+
     fun state(player: Player): PlanState {
         val contents = player.inventory.storageContents
-        val before = changes.all { change -> same(contents.getOrNull(change.slot), change.beforeBase64) }
-        val after = changes.all { change -> same(contents.getOrNull(change.slot), change.afterBase64) }
+        val before = changes.all { change -> same(contents.getOrNull(change.slot), change.beforeBytes()) }
+        val after = changes.all { change -> same(contents.getOrNull(change.slot), change.afterBytes()) }
         return when {
             before -> PlanState.BEFORE
             after -> PlanState.AFTER
@@ -83,23 +145,23 @@ class InventoryPlan private constructor(val changes: List<SlotChange>) {
         playerData: GiveawayPlayerDataPersistence = NativeGiveawayPlayerDataPersistence,
     ): Boolean {
         if (state(player) != PlanState.BEFORE) return false
-        changes.forEach { change -> player.inventory.setItem(change.slot, decode(change.afterBase64)) }
+        changes.forEach { change -> player.inventory.setItem(change.slot, decode(change.afterBytes())) }
         player.updateInventory()
         playerData.persist(player)
         return state(player) == PlanState.AFTER
     }
 
     companion object {
-        fun removal(player: Player, slot: Int, amount: Int): InventoryPlan? {
+        fun removal(player: Player, slot: Int, amount: Int): InventoryPlanCapture? {
             if (slot !in 0..8 || amount <= 0) return null
             val current = player.inventory.getItem(slot)?.takeUnless { it.type.isAir } ?: return null
             if (amount > current.amount) return null
-            val before = encode(current)
-            val after = if (amount == current.amount) null else encode(current.clone().also { it.amount -= amount })
-            return InventoryPlan(listOf(SlotChange(slot, before, after)))
+            val before = current.clone()
+            val after = if (amount == current.amount) null else current.clone().also { it.amount -= amount }
+            return InventoryPlanCapture(listOf(NativeSlotChange(slot, before, after)))
         }
 
-        fun delivery(player: Player, item: ItemStack): InventoryPlan? {
+        fun delivery(player: Player, item: ItemStack): InventoryPlanCapture? {
             require(!item.type.isAir && item.amount > 0)
             val before = player.inventory.storageContents.map { it?.takeUnless { stack -> stack.type.isAir }?.clone() }.toMutableList()
             val after = before.map { it?.clone() }.toMutableList()
@@ -126,23 +188,58 @@ class InventoryPlan private constructor(val changes: List<SlotChange>) {
 
             val changes =
                 after.indices.mapNotNull { slot ->
-                    val beforeBytes = encode(before[slot])
-                    val afterBytes = encode(after[slot])
-                    if (beforeBytes == afterBytes) null else SlotChange(slot, beforeBytes, afterBytes)
+                    if (InventoryStackMatcher.matches(before[slot], after[slot])) null
+                    else NativeSlotChange(slot, before[slot], after[slot])
                 }
-            return changes.takeIf { it.isNotEmpty() }?.let(::InventoryPlan)
+            return changes.takeIf { it.isNotEmpty() }?.let(::InventoryPlanCapture)
         }
 
         fun from(changes: List<SlotChange>): InventoryPlan = InventoryPlan(changes)
 
-        private fun same(stack: ItemStack?, encoded: String?): Boolean =
-            InventoryStackMatcher.matchesSerialized(stack, encoded)
+        internal fun prepare(changes: List<RawSlotChange>): InventoryPlan = InventoryPlan(changes.map(SlotChange::fromRaw))
 
-        private fun encode(stack: ItemStack?): String? =
-            stack?.takeUnless { it.type.isAir }?.serializeAsBytes()?.let { Base64.getEncoder().encodeToString(it) }
+        private fun same(stack: ItemStack?, bytes: ByteArray?): Boolean =
+            InventoryStackMatcher.matches(stack?.takeUnless { it.type.isAir }, decode(bytes))
 
-        private fun decode(encoded: String?): ItemStack? =
-            encoded?.let { ItemStack.deserializeBytes(Base64.getDecoder().decode(it)) }
+        private fun decode(bytes: ByteArray?): ItemStack? = bytes?.let(NativePaperItemStackBinaryCodec::decodeItem)
+    }
+}
+
+/** Read-only diagnostics serialize no inventory and decode at most one native item per step. */
+internal class InventoryPlanObservation(private val player: Player, private val changes: List<SlotChange>) {
+    private var index = 0
+    private var phase = 0
+    private var actual: ItemStack? = null
+    private var before = true
+    private var after = true
+
+    fun step(): Boolean {
+        if (index == changes.size) return true
+        val change = changes[index]
+        when (phase) {
+            0 -> {
+                actual = player.inventory.getItem(change.slot)?.takeUnless { it.type.isAir }?.clone()
+                phase = 1
+            }
+            1 -> {
+                val expected = change.beforeBytes()?.let(NativePaperItemStackBinaryCodec::decodeItem)
+                before = before && InventoryStackMatcher.matches(actual, expected)
+                phase = 2
+            }
+            else -> {
+                val expected = change.afterBytes()?.let(NativePaperItemStackBinaryCodec::decodeItem)
+                after = after && InventoryStackMatcher.matches(actual, expected)
+                actual = null
+                phase = 0
+                index++
+            }
+        }
+        return index == changes.size
+    }
+
+    fun state(): PlanState {
+        check(index == changes.size)
+        return when { before -> PlanState.BEFORE; after -> PlanState.AFTER; else -> PlanState.AMBIGUOUS }
     }
 }
 

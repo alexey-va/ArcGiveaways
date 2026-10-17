@@ -58,7 +58,7 @@ interface GiveawayPresentationPort {
 
     fun createItemDisplay(item: ItemStack, pose: GiveawayItemDisplayPose, scale: Float): GiveawayItemDisplayHandle
 
-    fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec)
+    fun sceneSteps(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec): Iterator<Unit>
 
     fun launchFirework(center: Location, scene: GiveawayVisualScene, style: GiveawayFireworkStyle, variant: Int)
 }
@@ -113,15 +113,16 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         return NativeGiveawayItemDisplayHandle(display)
     }
 
-    override fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec) {
-        if (spec.particleCount <= 0) return
+    /** Consume only on the owning thread; creating the iterator performs no native work. */
+    override fun sceneSteps(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec): Iterator<Unit> = sequence {
+        if (spec.particleCount <= 0) return@sequence
         when (scene) {
             GiveawayVisualScene.AMBIENT -> ambient(center, spec)
             GiveawayVisualScene.COUNTDOWN -> countdown(center, spec)
             GiveawayVisualScene.DRAWING -> drawing(center, spec)
             GiveawayVisualScene.WINNER -> winner(center, spec)
         }
-    }
+    }.iterator()
 
     override fun launchFirework(
         center: Location,
@@ -161,7 +162,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun ambient(center: Location, spec: GiveawaySceneSpec) {
+    private suspend fun SequenceScope<Unit>.ambient(center: Location, spec: GiveawaySceneSpec) {
         val origin = center.clone().add(0.0, 1.35, 0.0)
         val atomBudget = spec.particleCount * 3 / 5
         val perOrbit = (atomBudget / 3).coerceAtLeast(1)
@@ -182,10 +183,11 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
                 spec.radius * 0.38,
                 0.025,
             )
+            yield(Unit)
         }
     }
 
-    private fun countdown(center: Location, spec: GiveawaySceneSpec) {
+    private suspend fun SequenceScope<Unit>.countdown(center: Location, spec: GiveawaySceneSpec) {
         val origin = center.clone().add(0.0, 0.1, 0.0)
         val phase = phase(origin)
         val sparks = (spec.particleCount / 9).coerceAtLeast(1)
@@ -205,9 +207,10 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
             spec.radius * 0.32,
             0.12,
         )
+        yield(Unit)
     }
 
-    private fun drawing(center: Location, spec: GiveawaySceneSpec) {
+    private suspend fun SequenceScope<Unit>.drawing(center: Location, spec: GiveawaySceneSpec) {
         val origin = center.clone().add(0.0, 1.55, 0.0)
         val phase = phase(origin)
         val sparks = (spec.particleCount / 10).coerceAtLeast(1)
@@ -224,9 +227,10 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
             spec.radius * 0.28,
             0.06,
         )
+        yield(Unit)
     }
 
-    private fun winner(center: Location, spec: GiveawaySceneSpec) {
+    private suspend fun SequenceScope<Unit>.winner(center: Location, spec: GiveawaySceneSpec) {
         val origin = center.clone().add(0.0, 2.0, 0.0)
         val phase = phase(origin)
         val ambientBurst = (spec.particleCount / 5).coerceAtLeast(3)
@@ -251,6 +255,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
             spec.radius * 0.52,
             0.18,
         )
+        yield(Unit)
         origin.world.spawnParticle(
             Particle.FIREWORK,
             origin,
@@ -260,10 +265,12 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
             spec.radius * 0.48,
             0.2,
         )
+        yield(Unit)
         origin.world.spawnParticle(Particle.HAPPY_VILLAGER, origin, (ambientBurst / 6).coerceAtLeast(1), 1.1, 1.5, 1.1, 0.11)
+        yield(Unit)
     }
 
-    private fun dustHorizontalRing(
+    private suspend fun SequenceScope<Unit>.dustHorizontalRing(
         center: Location,
         count: Int,
         radius: Double,
@@ -278,7 +285,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun dustOrbit(
+    private suspend fun SequenceScope<Unit>.dustOrbit(
         center: Location,
         count: Int,
         radius: Double,
@@ -299,7 +306,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun dustStar(
+    private suspend fun SequenceScope<Unit>.dustStar(
         center: Location,
         count: Int,
         radius: Double,
@@ -326,7 +333,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun dustTripleHelix(
+    private suspend fun SequenceScope<Unit>.dustTripleHelix(
         center: Location,
         count: Int,
         radius: Double,
@@ -349,7 +356,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun dustSatellites(
+    private suspend fun SequenceScope<Unit>.dustSatellites(
         center: Location,
         count: Int,
         orbitRadius: Double,
@@ -373,7 +380,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun dustSphere(
+    private suspend fun SequenceScope<Unit>.dustSphere(
         center: Location,
         count: Int,
         radius: Double,
@@ -394,7 +401,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun dustRays(
+    private suspend fun SequenceScope<Unit>.dustRays(
         center: Location,
         count: Int,
         radius: Double,
@@ -423,7 +430,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
         }
     }
 
-    private fun dust(worldAnchor: Location, point: Location, color: Color, size: Float) {
+    private suspend fun SequenceScope<Unit>.dust(worldAnchor: Location, point: Location, color: Color, size: Float) {
         worldAnchor.world.spawnParticle(
             Particle.DUST,
             point,
@@ -434,6 +441,7 @@ object NativeGiveawayPresentationPort : GiveawayPresentationPort {
             0.0,
             Particle.DustOptions(color, size),
         )
+        yield(Unit)
     }
 
     private fun phase(location: Location): Double = (location.world.gameTime % 360L) * PI / 180.0

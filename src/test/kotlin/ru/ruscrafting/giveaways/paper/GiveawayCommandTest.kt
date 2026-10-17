@@ -16,7 +16,7 @@ class GiveawayCommandTest : StringSpec({
     "completion respects participation start and admin permissions without player fallback" {
         val record = mockk<GiveawayRecord> { every { displayId() } returns "ab12cd34" }
         val service = mockk<GiveawayService> { every { activeRecords() } returns listOf(record) }
-        val handler = GiveawayCommand(service, mockk(), { Result.success(Unit) })
+        val handler = GiveawayCommand(service, mockk(), { java.util.concurrent.CompletableFuture.completedFuture(Result.success(Unit)) })
         val command = mockk<Command>()
         val player = mockk<Player>(relaxed = true)
         every { player.hasPermission("arcgiveaways.use") } returns true
@@ -48,8 +48,9 @@ class GiveawayCommandTest : StringSpec({
             "ARCGIVEAWAYS_QA_JOURNAL id=bd624545 kind=REFUND status=PREPARED player=ONLINE state=AFTER changes=1",
         )
 
-        val handled = GiveawayCommand(service, locale, { Result.success(Unit) }) { query ->
-            if (query == "bd624545") report else emptyList()
+        val handled = GiveawayCommand(service, locale, { java.util.concurrent.CompletableFuture.completedFuture(Result.success(Unit)) }) { target, query ->
+            if (query == "bd624545") report.forEach(target::sendMessage)
+            java.util.concurrent.CompletableFuture.completedFuture(Unit)
         }
             .onCommand(sender, command, "giveaway", arrayOf("qa", "bd624545"))
 
@@ -67,7 +68,7 @@ class GiveawayCommandTest : StringSpec({
         val handler = GiveawayCommand(
             service,
             locale,
-            { Result.success(Unit) },
+            { java.util.concurrent.CompletableFuture.completedFuture(Result.success(Unit)) },
             openMenu = { opened += 1 },
         )
 

@@ -5,6 +5,7 @@ import io.kotest.matchers.shouldBe
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import net.kyori.adventure.title.Title
+import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.entity.Player
@@ -12,9 +13,13 @@ import org.bukkit.event.player.PlayerSwapHandItemsEvent
 import org.bukkit.inventory.ItemStack
 import org.opentest4j.TestAbortedException
 import ru.arc.config.ConfigManager
+import ru.arc.core.BoundedAsyncExecutor
+import ru.arc.core.BudgetedTaskQueue
+import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.PaperArcRuntime
 import ru.arc.core.Tasks
 import ru.arc.paper.network.BackendTransfer
+import ru.arc.paper.runtime.PaperNativeCleanupServiceProvider
 import ru.arc.paper.network.BackendTransferResult
 import ru.arc.paper.testing.MockBukkitTestRuntime
 import ru.arc.redis.InMemoryRedis
@@ -36,8 +41,39 @@ import java.nio.file.StandardCopyOption
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class GiveawayServiceMockBukkitTest : FunSpec({
+    test("QA report completes asynchronously with the same native eligibility and no inventory effects") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            val participant = fixture.player("Participant")
+            val distant = fixture.player("Distant")
+            distant.teleport(host.location.clone().add(1_000.0, 0.0, 0.0)) shouldBe true
+            host.inventory.setItem(0, ItemStack.of(Material.DIAMOND, 3))
+            val record = fixture.openRecord(host, listOf(participant, distant))
+            fixture.repository.create(record).join() shouldBe true
+            fixture.start()
+            fixture.await("seeded QA record") { fixture.service.activeRecords().singleOrNull()?.id == record.id }
+
+            val report = fixture.service.qaReport(record.displayId())
+            report.isDone shouldBe false
+            fixture.await("budgeted QA observation") { report.isDone }
+
+            val lines = report.join()
+            ("records=1" in lines.first()) shouldBe true
+            val row = lines.single { it.startsWith("ARCGIVEAWAYS_QA_RECORD ") }
+            ("participants=2" in row) shouldBe true
+            ("eligible=1" in row) shouldBe true
+            host.inventory.getItem(0)?.amount shouldBe 3
+            val missing = fixture.service.qaReport("does-not-exist")
+            fixture.await("missing QA record") { missing.isDone }
+            missing.join().single().startsWith("ARCGIVEAWAYS_QA status=not_found ") shouldBe true
+        }
+    }
+
     test("starting a giveaway locks Bukkit inventory events and broadcasts an isolated bright announcement") {
         withGiveawayFixture { fixture ->
             val host = fixture.player("Host")
@@ -68,6 +104,32 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             announcement.endsWith("\n") shouldBe true
             ("Приз: Алмаз ×2" in announcement) shouldBe true
             ("[Участвовать]" in announcement) shouldBe true
+        }
+    }
+
+    test("a delayed durable PREPARED write never changes inventory or accepts a second start") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            host.inventory.setItemInMainHand(ItemStack.of(Material.DIAMOND, 3))
+            fixture.start()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            fixture.journalFaults.preparedWriteGate = entered to release
+            try {
+                fixture.service.startGiveaway(host, 2)
+                fixture.await("native capture to reach the blocked durable write") { entered.count == 0L }
+                host.inventory.itemInMainHand.amount shouldBe 3
+                fixture.service.isInventoryLocked(host.uniqueId) shouldBe true
+                fixture.service.startGiveaway(host, 2)
+                fixture.paper.performTicks(5)
+                fixture.journalFaults.preparedWrites.get() shouldBe 1
+                fixture.service.activeRecords().isEmpty() shouldBe true
+            } finally { release.countDown() }
+            fixture.await("durable write followed by native mutation") {
+                fixture.service.activeRecords().singleOrNull()?.status == GiveawayStatus.OPEN
+            }
+            host.inventory.itemInMainHand.amount shouldBe 1
+            fixture.service.isInventoryLocked(host.uniqueId) shouldBe false
         }
     }
 
@@ -155,6 +217,23 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             movedPose.location.y shouldBe host.boundingBox.maxY + 0.65
             movedPose.location.z shouldBe host.location.z
             (movedPose.yawDegrees > initialPose.yawDegrees) shouldBe true
+        }
+    }
+
+    test("native shutdown seals immediately and drains every display across host ticks without observer cancellation") {
+        withGiveawayFixture { fixture ->
+            val removed = fixture.seedDetachedDisplays(300)
+            val cancelledObserver = fixture.service.closeAsync()
+            removed.get() shouldBe 0
+            cancelledObserver.isDone shouldBe false
+            cancelledObserver.cancel(false)
+            val observed = fixture.service.closeAsync()
+            fixture.paper.performTicks(1)
+            (removed.get() in 0..128) shouldBe true
+            observed.isDone shouldBe false
+            fixture.await("all detached visuals") { observed.isDone }
+            observed.join()
+            removed.get() shouldBe 300
         }
     }
 
@@ -367,12 +446,36 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             fixture.service.recoveryBacklog() shouldBe 1
             fixture.repository.hostGiveawayId(host.uniqueId.toString()).join() shouldBe committedId
 
-            fixture.await("preserved escrow to recover and open") {
-                fixture.repository.load(committedId).join()?.status == GiveawayStatus.OPEN
+            fixture.await("preserved escrow to recover and publish open") {
+                fixture.service.activeRecords().singleOrNull()?.let {
+                    it.id == committedId && it.status == GiveawayStatus.OPEN
+                } == true && !fixture.service.isInventoryLocked(host.uniqueId)
             }
             fixture.service.recoveryBacklog() shouldBe 1
             fixture.service.isInventoryLocked(host.uniqueId) shouldBe false
             host.inventory.itemInMainHand.type.isAir shouldBe true
+        }
+    }
+
+    test("an unknown terminal Redis outcome retires the applied prize without issuing it twice") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            val winner = fixture.player("Winner")
+            val opened = fixture.openRecord(host, listOf(winner))
+            val pending = opened.copy(status = GiveawayStatus.AWAITING_DELIVERY,
+                drawingCandidates = opened.participants, winner = opened.participants.single()).validated()
+            fixture.repository.create(pending).join() shouldBe true
+            fixture.redisFaults.failNextTerminalCasAfterCommit = true
+            fixture.start()
+
+            fixture.await("unknown terminal CAS and exact journal acknowledgement") {
+                fixture.repository.load(pending.id).join()?.status == GiveawayStatus.COMPLETED &&
+                    fixture.service.recoveryBacklog() == 0
+            }
+            fixture.redisFaults.terminalFailures shouldBe 1
+            winner.inventory.storageContents.filterNotNull().sumOf { it.amount } shouldBe 1
+            fixture.paper.performTicks(120)
+            winner.inventory.storageContents.filterNotNull().sumOf { it.amount } shouldBe 1
         }
     }
 
@@ -388,9 +491,9 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             fixture.await("inventory mutation after the injected journal failure") {
                 host.inventory.itemInMainHand.type.isAir
             }
-            fixture.service.isInventoryLocked(host.uniqueId) shouldBe false
             fixture.await("PREPARING recovery after the injected journal failure") {
-                fixture.service.activeRecords().singleOrNull()?.status == GiveawayStatus.OPEN
+                fixture.service.activeRecords().singleOrNull()?.status == GiveawayStatus.OPEN &&
+                    !fixture.service.isInventoryLocked(host.uniqueId)
             }
             fixture.journalFaults.appliedWriteFailures shouldBe 1
             fixture.service.isInventoryLocked(host.uniqueId) shouldBe false
@@ -516,9 +619,17 @@ private class GiveawayPaperFixture(private val intensity: Double) : AutoCloseabl
     val service: GiveawayService
     private val presentation = RecordingGiveawayPresentationPort()
     private val serializer = PlainTextComponentSerializer.plainText()
+    private val storage = BoundedAsyncExecutor("giveaway-test-storage")
+    private val callbacks: LifecycleTaskScope
+    private val nativeWork: BudgetedTaskQueue
+    private val nativeCleanup: PaperNativeCleanupServiceProvider
+
 
     init {
         PaperArcRuntime.installScheduling(plugin)
+        callbacks = LifecycleTaskScope()
+        nativeWork = BudgetedTaskQueue(callbacks)
+        nativeCleanup = PaperNativeCleanupServiceProvider(plugin)
         writeFixtureConfig(dataRoot, intensity)
         ConfigManager.clear()
         val settings = GiveawayConfig.load(dataRoot)
@@ -541,17 +652,24 @@ private class GiveawayPaperFixture(private val intensity: Double) : AutoCloseabl
             itemNames = RussianItemNames(catalog, plugin.logger, presentation),
             transfer = BackendTransfer { _, _ -> BackendTransferResult.SENT },
             backendDirectory = backendDirectory,
+            storage = storage,
+            nativeWork = nativeWork,
+            nativeCleanup = nativeCleanup,
             clockMs = { nowMs },
             presentation = presentation,
             travel = ImmediateGiveawayTravelPort,
-            playerData = GiveawayPlayerDataPersistence {},
+            playerData = GiveawayPlayerDataPersistence { check(Bukkit.isPrimaryThread()) },
         )
         paper.server.pluginManager.registerEvents(GiveawayListener(service), plugin)
     }
 
-    fun start() = service.start()
+    fun start() {
+        val ready = service.start()
+        await("giveaway service startup") { ready.isDone }
+        ready.join()
+    }
 
-    fun player(name: String) = paper.addPlayer(name).also { it.teleport(world.spawnLocation) }
+    fun player(name: String) = paper.addPlayer(name).also { it.isOp = true; it.teleport(world.spawnLocation) }
 
     fun openRecord(
         host: Player,
@@ -619,6 +737,18 @@ private class GiveawayPaperFixture(private val intensity: Double) : AutoCloseabl
 
     fun itemDisplays(): List<ShownItemDisplay> = presentation.itemDisplays()
 
+    fun seedDetachedDisplays(count: Int): AtomicInteger {
+        val removed = AtomicInteger()
+        val field = GiveawayService::class.java.getDeclaredField("itemDisplays").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val displays = field.get(service) as MutableMap<String, GiveawayItemDisplayHandle>
+        repeat(count) { index -> displays["detached-$index"] = object : GiveawayItemDisplayHandle {
+            override fun update(pose: GiveawayItemDisplayPose) = true
+            override fun remove() { check(Bukkit.isPrimaryThread()); removed.incrementAndGet() }
+        } }
+        return removed
+    }
+
     fun reloadItemDisplay(scale: Double) {
         writeFixtureConfig(dataRoot, intensity = intensity, itemDisplayScale = scale)
         ConfigManager.clear()
@@ -626,7 +756,13 @@ private class GiveawayPaperFixture(private val intensity: Double) : AutoCloseabl
     }
 
     override fun close() {
-        runCatching(service::close)
+        val cleanup = service.closeAsync()
+        await("native visual cleanup") { cleanup.isDone }
+        cleanup.join()
+        nativeCleanup.close()
+        nativeWork.close()
+        callbacks.close()
+        storage.closeAsync { service.closePersistence() }.get(10, java.util.concurrent.TimeUnit.SECONDS)
         Tasks.reset()
         ConfigManager.clear()
         runCatching(paper::close)
@@ -637,7 +773,9 @@ private class GiveawayPaperFixture(private val intensity: Double) : AutoCloseabl
 private class UnknownOutcomeRedis(
     private val delegate: RedisOperations,
 ) : RedisOperations by delegate {
-    var failNextRecordCasAfterCommit: Boolean = false
+    @Volatile var failNextRecordCasAfterCommit: Boolean = false
+    @Volatile var failNextTerminalCasAfterCommit: Boolean = false
+    @Volatile var terminalFailures: Int = 0
 
     override fun compareAndSetMapEntry(
         key: String,
@@ -646,7 +784,13 @@ private class UnknownOutcomeRedis(
         replacementValue: String?,
     ): CompletableFuture<Boolean> {
         val result = delegate.compareAndSetMapEntry(key, mapKey, expectedValue, replacementValue)
-        if (key != RedisGiveawayRepository.RECORDS_KEY || !failNextRecordCasAfterCommit) return result
+        if (key != RedisGiveawayRepository.RECORDS_KEY) return result
+        if (failNextTerminalCasAfterCommit && replacementValue?.contains("\"status\":\"COMPLETED\"") == true) {
+            failNextTerminalCasAfterCommit = false
+            terminalFailures++
+            return result.thenCompose { CompletableFuture.failedFuture(IllegalStateException("unknown terminal outcome")) }
+        }
+        if (!failNextRecordCasAfterCommit) return result
         failNextRecordCasAfterCommit = false
         return result.thenCompose { CompletableFuture.failedFuture(IllegalStateException("unknown create outcome")) }
     }
@@ -655,10 +799,20 @@ private class UnknownOutcomeRedis(
 private class FailingInventoryJournalRepository(
     private val delegate: InventoryJournalRepository,
 ) : InventoryJournalRepository {
-    var failNextAppliedWrite: Boolean = false
-    var appliedWriteFailures: Int = 0
+    @Volatile var failNextAppliedWrite: Boolean = false
+    @Volatile var appliedWriteFailures: Int = 0
+    @Volatile var preparedWriteGate: Pair<CountDownLatch, CountDownLatch>? = null
+    val preparedWrites = AtomicInteger()
 
     override fun write(record: InventoryJournalRecord): InventoryJournalRecord {
+        check(!Bukkit.isPrimaryThread()) { "Durable journal write ran on Paper" }
+        if (record.status == JournalStatus.PREPARED) {
+            preparedWrites.incrementAndGet()
+            preparedWriteGate?.also { preparedWriteGate = null }?.let { (entered, release) ->
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS)) { "Prepared write gate timed out" }
+            }
+        }
         if (record.status == JournalStatus.APPLIED && failNextAppliedWrite) {
             failNextAppliedWrite = false
             appliedWriteFailures += 1
@@ -667,10 +821,15 @@ private class FailingInventoryJournalRepository(
         return delegate.write(record)
     }
 
-    override fun acknowledgeExactly(record: InventoryJournalRecord): DurableAcknowledgementOutcome =
-        delegate.acknowledgeExactly(record)
+    override fun acknowledgeExactly(record: InventoryJournalRecord): DurableAcknowledgementOutcome {
+        check(!Bukkit.isPrimaryThread()) { "Durable journal acknowledgement ran on Paper" }
+        return delegate.acknowledgeExactly(record)
+    }
 
-    override fun loadAll(): List<InventoryJournalRecord> = delegate.loadAll()
+    override fun loadAll(): List<InventoryJournalRecord> {
+        check(!Bukkit.isPrimaryThread()) { "Durable journal read ran on Paper" }
+        return delegate.loadAll()
+    }
 }
 
 private data class ShownTitle(val playerId: UUID, val title: Title)
@@ -716,9 +875,10 @@ private class RecordingGiveawayPresentationPort : GiveawayPresentationPort {
         shownItemDisplays += ShownItemDisplay(item.clone(), scale, handle)
     }
 
-    override fun renderScene(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec) {
+    override fun sceneSteps(center: Location, scene: GiveawayVisualScene, spec: GiveawaySceneSpec): Iterator<Unit> = sequence {
         shownScenes += ShownScene(center.clone(), scene, spec)
-    }
+        yield(Unit)
+    }.iterator()
 
     override fun launchFirework(
         center: Location,
