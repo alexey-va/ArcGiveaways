@@ -45,17 +45,12 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
     private lateinit var locale: GiveawayLocale
     private lateinit var itemNames: RussianItemNames
     private var pluginRuntime: PaperPluginRuntime? = null
-    private class StorageGeneration(val worker: BoundedAsyncExecutor, val callbacks: LifecycleTaskScope,
-                                    val nativeCleanup: ArcNativeCleanupService) {
-        val nativeWork = BudgetedTaskQueue(callbacks)
-        val drain = CompletableFuture<Unit>()
-        val reloading = AtomicBoolean()
-        @Volatile var redis: PaperRedisClient? = null
-        var service: GiveawayService? = null
-    }
-    private var generation: StorageGeneration? = null
-    private var predecessor = CompletableFuture.completedFuture(Unit)
-    internal fun drained(): CompletableFuture<Unit> = (generation?.drain ?: predecessor).copy()
+    private lateinit var storage: BoundedAsyncExecutor
+    private lateinit var callbacks: LifecycleTaskScope
+    private lateinit var nativeWork: BudgetedTaskQueue
+    private var redis: PaperRedisClient? = null
+    private val reloading = AtomicBoolean()
+    private var nativeCleanupTail = CompletableFuture.completedFuture<Void>(null)
 
     private class Prepared(
         val settings: GiveawayConfig,
@@ -66,30 +61,29 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
     )
 
     override fun onEnable() {
+        if (!nativeCleanupTail.isDone || nativeCleanupTail.isCompletedExceptionally) {
+            logger.severe("Previous giveaway visual cleanup is still pending or failed")
+            server.pluginManager.disablePlugin(this)
+            return
+        }
         val lifecycle = PaperPluginRuntime(this, "arc-giveaways", BukkitTaskScheduler(this)).also {
             pluginRuntime = it
             it.start("version" to pluginMeta.version)
         }
-        predecessor.whenCompleteSync(lifecycle.tasks) { _, failure ->
-            if (pluginRuntime !== lifecycle) return@whenCompleteSync
-            if (failure != null) failStartup(failure) else beginGeneration(lifecycle)
-        }
-    }
-
-    private fun beginGeneration(lifecycle: PaperPluginRuntime) {
         try {
             PaperArcRuntime.installScheduling(this)
             val nativeCleanup = requireNotNull(server.servicesManager.load(ArcNativeCleanupService::class.java)) {
                 "Required ARC native cleanup provider is not registered"
             }
-            val owner = StorageGeneration(BoundedAsyncExecutor("arc-giveaways-storage"), LifecycleTaskScope(BukkitTaskScheduler(this)), nativeCleanup)
-            generation = owner
-            // ServicesManager and plugin identity are captured before any worker acquisition.
             val redisService = requireNotNull(server.servicesManager.load(ArcRedisService::class.java)) {
                 "Required ARC Redis provider is not registered"
             }
+            storage = BoundedAsyncExecutor("arc-giveaways-storage")
+            callbacks = LifecycleTaskScope(BukkitTaskScheduler(this))
+            nativeWork = BudgetedTaskQueue(callbacks)
+            reloading.set(false)
             val ownerName = name
-            owner.worker.submit {
+            val prepared = storage.submit {
                 saveDefaultConfig()
                 saveResourceIfMissing("lang/ru.yml")
                 saveResourceIfMissing("lang/en.yml")
@@ -100,24 +94,21 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
                 val loadedLocale = GiveawayLocale(dataFolder.toPath()) { settings }
                 val names = RussianItemNames(dataFolder.toPath().resolveSibling("ARC").resolve("lang.json"), logger)
                 val manager = PaperRedisClient.open(redisService, ownerName, redisConfig.connection(), loadedSettings.serverId)
-                owner.redis = manager
+                redis = manager
                 manager.retainDuringShutdown()
                 if (!manager.isConnected() || !manager.healthCheck().get(5, TimeUnit.SECONDS)) {
                     error("Redis connection is unavailable")
                 }
                 manager.init()
                 Prepared(loadedSettings, loadedLocale, names, manager, InventoryJournalStore(dataFolder.toPath()))
-            }.whenCompleteSync(lifecycle.tasks) { prepared, failure ->
-                if (generation !== owner || pluginRuntime !== lifecycle) return@whenCompleteSync
-                if (failure != null || prepared == null) failStartup(failure ?: IllegalStateException("Missing giveaway configuration"))
-                else runCatching { finishEnable(lifecycle, owner, prepared) }.onFailure(::failStartup)
-            }
+            }.get()
+            finishEnable(lifecycle, prepared, nativeCleanup)
         } catch (failure: Throwable) { failStartup(failure) }
     }
 
-    private fun finishEnable(lifecycle: PaperPluginRuntime, owner: StorageGeneration, prepared: Prepared) {
-        val storage = owner.worker
-        val nativeWork = owner.nativeWork
+    private fun finishEnable(lifecycle: PaperPluginRuntime, prepared: Prepared, nativeCleanup: ArcNativeCleanupService) {
+        val storage = this.storage
+        val nativeWork = this.nativeWork
         settings = prepared.settings
         locale = prepared.locale
         itemNames = prepared.itemNames
@@ -145,21 +136,14 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
             backendDirectory,
             storage,
             nativeWork,
-            owner.nativeCleanup,
+            nativeCleanup,
         ).also { lifecycle.own(it) }
         service = activeService
-        owner.service = activeService
-        activeService.start().whenComplete { _, failure ->
-            nativeWork.call({ generation === owner && pluginRuntime === lifecycle }) {
-                if (failure != null) failStartup(failure)
-                else runCatching {
-                    finishReady(lifecycle, manager, activeService)
-                    lifecycle.ready("server" to settings.serverId, "redis" to manager.isConnected())
-                    lifecycle.reportHealthEvery(HEALTH_REPORT_TICKS)
-                    logger.info("ArcGiveaways enabled on ${settings.serverId}; Redis coordination is required")
-                }.onFailure(::failStartup)
-            }
-        }
+        activeService.start().get()
+        finishReady(lifecycle, manager, activeService)
+        lifecycle.ready("server" to settings.serverId, "redis" to manager.isConnected())
+        lifecycle.reportHealthEvery(HEALTH_REPORT_TICKS)
+        logger.info("ArcGiveaways enabled on ${settings.serverId}; Redis coordination is required")
     }
 
     private fun finishReady(lifecycle: PaperPluginRuntime, manager: PaperRedisClient, activeService: GiveawayService) {
@@ -220,64 +204,53 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
-        val owner = generation
-        generation = null
-        if (owner != null) predecessor = owner.drain
-        val lifecycle = pluginRuntime
+        val lifecycle = pluginRuntime ?: return
         pluginRuntime = null
+        val activeService = service.also { service = null }
+        val activeRedis = redis.also { redis = null }
         var failure: Throwable? = null
         fun attempt(close: () -> Unit) {
             try { close() } catch (error: Throwable) {
-                if (failure == null) failure = error else failure?.addSuppressed(error)
+                if (failure == null) failure = error else if (failure !== error) failure.addSuppressed(error)
             }
         }
-        attempt { owner?.nativeWork?.close() }
-        attempt { owner?.callbacks?.close() }
-        attempt { lifecycle?.close() }
-        if (owner != null) closeStorage(owner, failure)
-        service = null
+        attempt { if (::nativeWork.isInitialized) nativeWork.close() }
+        attempt { if (::callbacks.isInitialized) callbacks.close() }
+        attempt { lifecycle.close() }
+        if (activeService != null) nativeCleanupTail = runCatching { activeService.closeAsync() }
+            .getOrElse { CompletableFuture.failedFuture(it) }
+        // Detached native handles retire on the host; only accepted IO is awaited here.
+        attempt {
+            if (::storage.isInitialized) storage.closeAsync {
+                var terminalFailure: Throwable? = null
+                listOf<() -> Unit>(
+                    { activeService?.closePersistence(); Unit },
+                    { activeRedis?.close(); Unit },
+                ).forEach { close ->
+                    try { close() } catch (error: Throwable) {
+                        if (terminalFailure == null) terminalFailure = error else if (terminalFailure !== error) terminalFailure.addSuppressed(error)
+                    }
+                }
+                terminalFailure?.let { throw it }
+            }.join()
+        }
+        failure?.let { logger.log(java.util.logging.Level.SEVERE, "Could not close ArcGiveaways storage", it) }
         transfer = null
         Tasks.reset()
     }
 
-    private fun closeStorage(owner: StorageGeneration, nativeFailure: Throwable?) {
-        val nativeDrain = runCatching { owner.service?.closeAsync() ?: CompletableFuture.completedFuture(null) }
-            .getOrElse { CompletableFuture.failedFuture(it) }
-        val persistenceDrain = owner.worker.closeAsync {
-            var failure = nativeFailure
-            listOf<() -> Unit>(
-                { owner.service?.closePersistence(); Unit },
-                { owner.redis?.close(); Unit },
-            ).forEach { close ->
-                try { close() } catch (error: Throwable) {
-                    if (failure == null) failure = error else if (failure !== error) failure?.addSuppressed(error)
-                }
-            }
-            failure?.let { throw it }
-        }
-        CompletableFuture.allOf(persistenceDrain, nativeDrain).whenComplete { _, _ ->
-            val failures = listOf(persistenceDrain, nativeDrain).mapNotNull {
-                runCatching { it.join() }.exceptionOrNull()?.let { error -> error.cause ?: error }
-            }
-            if (failures.isEmpty()) owner.drain.complete(Unit) else {
-                val failure = failures.first()
-                failures.drop(1).filterNot { it === failure }.forEach(failure::addSuppressed)
-                owner.drain.completeExceptionally(failure)
-                logger.log(java.util.logging.Level.SEVERE, "Could not close ArcGiveaways generation", failure)
-            }
-        }
-    }
-
     private fun reloadPlugin(): CompletableFuture<Result<Unit>> {
-        val owner = generation ?: return CompletableFuture.completedFuture(Result.failure(IllegalStateException("Plugin is closed")))
-        if (!owner.reloading.compareAndSet(false, true)) {
+        val lifecycle = pluginRuntime ?: return CompletableFuture.completedFuture(Result.failure(IllegalStateException("Plugin is closed")))
+        val queue = nativeWork
+        val worker = storage
+        if (!reloading.compareAndSet(false, true)) {
             return CompletableFuture.completedFuture(Result.failure(IllegalStateException("Reload is already in progress")))
         }
         val current = settings
         val currentLocale = locale
         val currentItemNames = itemNames
-        val currentService = requireNotNull(owner.service)
-        return owner.worker.submit {
+        val currentService = requireNotNull(service)
+        return worker.submit {
             val candidate = GiveawayConfig.inspect(dataFolder.toPath())
             require(candidate.serverId == current.serverId) { "server-id requires a restart" }
             require(candidate.allowedOrigins == current.allowedOrigins) { "cross-server.allowed-origins requires a restart" }
@@ -285,7 +258,7 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
             require(candidate.presenceLeaseSeconds == current.presenceLeaseSeconds) { "presence-lease-seconds requires a restart" }
             Triple(candidate, currentLocale.prepare(dataFolder.toPath()), currentItemNames.prepare())
         }.handle { prepared, failure -> prepared to failure }.thenCompose { (prepared, failure) ->
-            owner.nativeWork.call({ generation === owner }) {
+            queue.call({ pluginRuntime === lifecycle && service === currentService }) {
                 try {
                     if (failure != null) Result.failure(failure.cause ?: failure)
                     else runCatching {
@@ -295,9 +268,9 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
                         settings = prepared.first
                         currentService.reload(settings)
                     }
-                } finally { owner.reloading.set(false) }
+                } finally { reloading.set(false) }
             }
-        }.whenComplete { _, _ -> owner.reloading.set(false) }
+        }.whenComplete { _, _ -> reloading.set(false) }
     }
 
     private fun mergeBundledDefaults() {

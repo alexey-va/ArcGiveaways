@@ -149,45 +149,25 @@ class GiveawayService(
         acknowledge = { committed, _ -> storage.submit { journalStore.acknowledgeExactly(committed) } },
     )
 
-    /** Reads and validates durable bytes on storage, then checks native item payloads one slot per step. */
-    fun start(): CompletableFuture<Unit> = storage.submit {
-        val loaded = journalStore.loadAll()
-        eventBus = repository.openEvents(originAllowed = settings.allowedOrigins::contains) { event, _ -> refresh(event) }
-        loaded
-    }.thenCompose { loaded ->
-        val records = loaded.iterator()
-        var current: InventoryJournalRecord? = null
-        var changes: Iterator<SlotChange> = emptyList<SlotChange>().iterator()
-        nativeWork.call({ !closed.get() }) {
-            nativeWork.submit({ !closed.get() }) {
-                if (changes.hasNext()) {
-                    InventoryJournalRecord.validateNative(changes.next())
-                    false
-                } else {
-                    current?.let { journals[journalKey(it.giveawayId, it.kind)] = it }
-                    current = null
-                    if (!records.hasNext()) true else {
-                        current = records.next()
-                        changes = requireNotNull(current).changes.iterator()
-                        false
-                    }
-                }
-            }
-        }.thenCompose { it }
-    }.thenCompose {
-        nativeWork.call({ !closed.get() }) {
-            reconcile()
-            heartbeatPresence()
-            lifecycleTasks.runTimer(20, 20, ::tick)
-            lifecycleTasks.runTimer(1, ITEM_DISPLAY_UPDATE_TICKS, ::updateItemDisplays)
-            lifecycleTasks.runTimer(40, 100, ::reconcile)
-            lifecycleTasks.runTimer(
-                settings.presenceHeartbeatSeconds * TICKS_PER_SECOND,
-                settings.presenceHeartbeatSeconds * TICKS_PER_SECOND,
-                ::heartbeatPresence,
-            )
-            Unit
+    /** Sequential maintenance startup; gameplay journal operations remain asynchronous. */
+    fun start(): CompletableFuture<Unit> {
+        val loaded = storage.submit {
+            val records = journalStore.loadAll()
+            eventBus = repository.openEvents(originAllowed = settings.allowedOrigins::contains) { event, _ -> refresh(event) }
+            records
+        }.get()
+        loaded.forEach { record ->
+            record.changes.forEach(InventoryJournalRecord::validateNative)
+            journals[journalKey(record.giveawayId, record.kind)] = record
         }
+        reconcile()
+        heartbeatPresence()
+        lifecycleTasks.runTimer(20, 20, ::tick)
+        lifecycleTasks.runTimer(1, ITEM_DISPLAY_UPDATE_TICKS, ::updateItemDisplays)
+        lifecycleTasks.runTimer(40, 100, ::reconcile)
+        lifecycleTasks.runTimer(settings.presenceHeartbeatSeconds * TICKS_PER_SECOND,
+            settings.presenceHeartbeatSeconds * TICKS_PER_SECOND, ::heartbeatPresence)
+        return CompletableFuture.completedFuture(Unit)
     }
 
     fun reload(updated: GiveawayConfig) {
