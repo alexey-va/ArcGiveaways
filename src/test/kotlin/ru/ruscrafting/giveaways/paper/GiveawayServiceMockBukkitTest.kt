@@ -99,7 +99,12 @@ class GiveawayServiceMockBukkitTest : FunSpec({
             val opened = fixture.service.activeRecords().single()
             fixture.repository.hostGiveawayId(host.uniqueId.toString()).join() shouldBe opened.id
 
-            val announcement = fixture.drainMessages(observer::nextComponentMessage).single { "Раздача от Host" in it }
+            val messages = mutableListOf<String>()
+            fixture.await("opened giveaway announcement reaches the observer") {
+                messages += fixture.drainMessages(observer::nextComponentMessage)
+                messages.any { "Раздача от Host" in it }
+            }
+            val announcement = messages.single { "Раздача от Host" in it }
             announcement.startsWith("\n") shouldBe true
             announcement.endsWith("\n") shouldBe true
             ("Приз: Алмаз ×2" in announcement) shouldBe true
