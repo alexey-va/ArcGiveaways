@@ -99,7 +99,7 @@ class GiveawayService(
     private val protectedPlayers = mutableMapOf<String, Int>()
     private val participantsGauge = AtomicInteger()
     private val cacheVersion = AtomicLong()
-    private val snapshotInFlight = AtomicBoolean()
+    private val snapshotRefresh = AtomicReference<CompletableFuture<Unit>?>()
     @Volatile private var publishedSnapshotVersion = 0L
     @Volatile private var activeSnapshot: List<GiveawayRecord> = emptyList()
     @Volatile private var inventoryLocks = ConcurrentHashMap.newKeySet<UUID>()
@@ -204,6 +204,7 @@ class GiveawayService(
         val completion = CompletableFuture<Void>()
         closeCompletion = completion
         closed.set(true)
+        snapshotRefresh.getAndSet(null)?.completeExceptionally(java.util.concurrent.CancellationException("Giveaway service is closed"))
         lifecycleTasks.close()
         val bars = bossBars.iterator()
         val viewers = bossViewers
@@ -620,7 +621,21 @@ class GiveawayService(
                                 cooldowns[player.uniqueId] = startedAtMs + settings.hostCooldownSeconds * 1_000L
                             } else cooldowns.remove(player.uniqueId)
                             acceptRecord(opened)
-                            if (player.isOnline) player.sendMessage(locale.render(MessageKey.STARTED, player, values("id", opened.displayId())))
+                            refreshActiveSnapshot().onMain(
+                                success = {
+                                    // The success acknowledgement must expose the same live record to
+                                    // status and tab completion. A later cancellation must win this race.
+                                    val current = cache[opened.id]
+                                    if (player.isOnline && current != null && current.revision >= opened.revision &&
+                                        current.status == GiveawayStatus.OPEN) {
+                                        player.sendMessage(locale.render(MessageKey.STARTED, player, values("id", opened.displayId())))
+                                    }
+                                },
+                                failure = { failure ->
+                                    plugin.logger.warning("Could not publish opened giveaway ${opened.id}: ${failure.message}")
+                                    if (player.isOnline) player.sendMessage(locale.render(MessageKey.GENERIC_ERROR, player))
+                                },
+                            )
                         } else {
                             if (player.isOnline) player.sendMessage(locale.render(MessageKey.GENERIC_ERROR, player))
                             reconcileUnknownStart(record.id)
@@ -1844,15 +1859,38 @@ class GiveawayService(
         cacheVersion.incrementAndGet()
     }
 
-    private fun refreshActiveSnapshot() {
-        if (!snapshotInFlight.compareAndSet(false, true)) return
+    private fun refreshActiveSnapshot(): CompletableFuture<Unit> {
+        snapshotRefresh.get()?.let { return it.copy() }
+        if (closed.get()) return CompletableFuture.failedFuture(java.util.concurrent.CancellationException("Giveaway service is closed"))
+        if (publishedSnapshotVersion == cacheVersion.get()) return CompletableFuture.completedFuture(Unit)
+        val completion = CompletableFuture<Unit>()
+        if (!snapshotRefresh.compareAndSet(null, completion)) return refreshActiveSnapshot()
+        continueSnapshotRefresh(completion)
+        return completion.copy()
+    }
+
+    /** One coalesced worker snapshot; stale candidates retry outside the native queue. */
+    private fun continueSnapshotRefresh(completion: CompletableFuture<Unit>) {
+        if (completion.isDone) return
         val version = cacheVersion.get()
         storage.submit {
             cache.values.filter { it.status == GiveawayStatus.OPEN || it.status == GiveawayStatus.DRAWING }
                 .sortedBy { it.drawAtMs }
-        }.thenCompose { candidate -> nativeWork.call({ !closed.get() }) {
-            if (cacheVersion.get() == version) { activeSnapshot = candidate; publishedSnapshotVersion = version }
-        } }.whenComplete { _, _ -> snapshotInFlight.set(false) }
+        }.thenCompose { candidate -> nativeWork.call({ !closed.get() && !completion.isDone }) {
+            if (cacheVersion.get() != version) false else {
+                activeSnapshot = candidate
+                publishedSnapshotVersion = version
+                true
+            }
+        } }.whenComplete { published, failure ->
+            if (failure != null) {
+                snapshotRefresh.compareAndSet(completion, null)
+                completion.completeExceptionally(failure)
+            } else if (published == true) {
+                snapshotRefresh.compareAndSet(completion, null)
+                completion.complete(Unit)
+            } else continueSnapshotRefresh(completion)
+        }
     }
 
     private fun clearVisualRuntime(id: String) {

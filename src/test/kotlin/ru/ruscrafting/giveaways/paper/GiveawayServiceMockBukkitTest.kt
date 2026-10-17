@@ -133,6 +133,75 @@ class GiveawayServiceMockBukkitTest : FunSpec({
         }
     }
 
+    test("STARTED is acknowledged only after the opened record is available to status and tab completion") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            host.inventory.setItemInMainHand(ItemStack.of(Material.DIAMOND, 1))
+            fixture.start()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            fixture.redisFaults.beforeNextOpenResult = { fixture.blockStorage(entered, release) }
+            try {
+                fixture.service.startGiveaway(host, 1)
+                fixture.await("opened record to reach its blocked snapshot publication") { entered.count == 0L }
+                fixture.paper.performTicks(5)
+                fixture.service.activeRecords().isEmpty() shouldBe true
+                fixture.drainMessages(host::nextComponentMessage).any { "Раздача началась" in it } shouldBe false
+            } finally { release.countDown() }
+            val messages = mutableListOf<String>()
+            fixture.await("STARTED after actual snapshot publication") {
+                messages += fixture.drainMessages(host::nextComponentMessage)
+                messages.any { "Раздача началась" in it }
+            }
+            fixture.service.activeRecords().single().status shouldBe GiveawayStatus.OPEN
+            fixture.service.sendStatus(host)
+            fixture.await("immediate status reads the acknowledged giveaway") {
+                fixture.drainMessages(host::nextComponentMessage).any { "Алмаз" in it }
+            }
+            host.inventory.itemInMainHand.type shouldBe Material.AIR
+        }
+    }
+
+    test("one coalesced snapshot retries a stale candidate without resurrecting a later cancellation") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            fixture.start()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            fixture.blockStorage(entered, release)
+            entered.await(5, TimeUnit.SECONDS) shouldBe true
+            try {
+                val record = fixture.openRecord(host)
+                val oldObserver = fixture.acceptForPublication(record)
+                val latest = fixture.acceptForPublication(record.copy(revision = record.revision + 1, status = GiveawayStatus.CANCELLED))
+                oldObserver.cancel(false)
+                fixture.paper.performTicks(5)
+                latest.isDone shouldBe false
+                release.countDown()
+                fixture.await("newest snapshot publication") { latest.isDone }
+                latest.join()
+                fixture.service.activeRecords().isEmpty() shouldBe true
+            } finally { release.countDown() }
+        }
+    }
+
+    test("closing the generation fails an accepted snapshot acknowledgement before a delayed worker returns") {
+        withGiveawayFixture { fixture ->
+            val host = fixture.player("Host")
+            fixture.start()
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            fixture.blockStorage(entered, release)
+            entered.await(5, TimeUnit.SECONDS) shouldBe true
+            try {
+                val pending = fixture.acceptForPublication(fixture.openRecord(host))
+                fixture.service.closeAsync()
+                pending.isCompletedExceptionally shouldBe true
+                fixture.service.activeRecords().isEmpty() shouldBe true
+            } finally { release.countDown() }
+        }
+    }
+
     test("bossbar is global while actionbar and five-second title are participant-only") {
         withGiveawayFixture { fixture ->
             val host = fixture.player("Host")
@@ -675,6 +744,18 @@ private class GiveawayPaperFixture(private val intensity: Double) : AutoCloseabl
         ready.join()
     }
 
+    fun blockStorage(entered: CountDownLatch, release: CountDownLatch) {
+        storage.submit { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) { "Snapshot gate timed out" } }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun acceptForPublication(record: GiveawayRecord): CompletableFuture<Unit> {
+        GiveawayService::class.java.getDeclaredMethod("acceptRecord", GiveawayRecord::class.java).apply { isAccessible = true }
+            .invoke(service, record)
+        return GiveawayService::class.java.getDeclaredMethod("refreshActiveSnapshot").apply { isAccessible = true }
+            .invoke(service) as CompletableFuture<Unit>
+    }
+
     fun player(name: String) = paper.addPlayer(name).also { it.isOp = true; it.teleport(world.spawnLocation) }
 
     fun openRecord(
@@ -782,6 +863,7 @@ private class UnknownOutcomeRedis(
     @Volatile var failNextRecordCasAfterCommit: Boolean = false
     @Volatile var failNextTerminalCasAfterCommit: Boolean = false
     @Volatile var terminalFailures: Int = 0
+    @Volatile var beforeNextOpenResult: (() -> Unit)? = null
 
     override fun compareAndSetMapEntry(
         key: String,
@@ -791,6 +873,12 @@ private class UnknownOutcomeRedis(
     ): CompletableFuture<Boolean> {
         val result = delegate.compareAndSetMapEntry(key, mapKey, expectedValue, replacementValue)
         if (key != RedisGiveawayRepository.RECORDS_KEY) return result
+        if (replacementValue?.contains("\"status\":\"OPEN\"") == true) {
+            beforeNextOpenResult?.let { before ->
+                beforeNextOpenResult = null
+                return result.thenApply { changed -> if (changed) before(); changed }
+            }
+        }
         if (failNextTerminalCasAfterCommit && replacementValue?.contains("\"status\":\"COMPLETED\"") == true) {
             failNextTerminalCasAfterCommit = false
             terminalFailures++
