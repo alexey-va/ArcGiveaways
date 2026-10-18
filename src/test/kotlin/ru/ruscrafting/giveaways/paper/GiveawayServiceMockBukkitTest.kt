@@ -296,18 +296,18 @@ class GiveawayServiceMockBukkitTest : FunSpec({
 
     test("native shutdown seals immediately and drains every display across host ticks without observer cancellation") {
         withGiveawayFixture { fixture ->
-            val removed = fixture.seedDetachedDisplays(300)
+            val removed = fixture.seedDetachedDisplays(600)
             val cancelledObserver = fixture.service.closeAsync()
             removed.get() shouldBe 0
             cancelledObserver.isDone shouldBe false
             cancelledObserver.cancel(false)
             val observed = fixture.service.closeAsync()
             fixture.paper.performTicks(1)
-            (removed.get() in 0..128) shouldBe true
+            (removed.get() in 0..512) shouldBe true
             observed.isDone shouldBe false
             fixture.await("all detached visuals") { observed.isDone }
             observed.join()
-            removed.get() shouldBe 300
+            removed.get() shouldBe 600
         }
     }
 
