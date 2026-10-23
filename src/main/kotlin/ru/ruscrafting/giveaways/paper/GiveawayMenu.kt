@@ -4,6 +4,7 @@ import net.kyori.adventure.text.Component
 import org.bukkit.Material
 import org.bukkit.entity.Player
 import ru.arc.paper.menu.PaperDialogActionId
+import ru.arc.paper.menu.DialogTables
 import ru.arc.paper.menu.PaperDialogBody
 import ru.arc.paper.menu.PaperDialogButton
 import ru.arc.paper.menu.PaperDialogClickContext
@@ -44,7 +45,7 @@ class GiveawayMenu(
                 id = "arcgiveaways.menu",
                 title = text(player, MessageKey.MENU_TITLE),
                 body = listOf(
-                    PaperDialogBody(
+                    summary(
                         textWithComponents(
                             player,
                             if (records.isEmpty()) MessageKey.MENU_BODY_EMPTY else MessageKey.MENU_BODY,
@@ -150,7 +151,7 @@ class GiveawayMenu(
                 id = "arcgiveaways.start-confirm",
                 title = text(player, MessageKey.MENU_CONFIRM_TITLE),
                 body = listOf(
-                    PaperDialogBody(
+                    summary(
                         textWithComponents(
                             player,
                             MessageKey.MENU_CONFIRM_BODY,
@@ -181,6 +182,10 @@ class GiveawayMenu(
 
     private fun contextButton(id: String, label: Component, action: (PaperDialogClickContext) -> Unit): PaperDialogButton =
         contextButton(id, label, 230, action)
+
+    private fun summary(text: Component, width: Int) = DialogTables.filledBody(
+        rows = listOf(listOf(text)), headers = null, width = width, columnWeights = listOf(1),
+    )
 
     private fun contextButton(
         id: String,
