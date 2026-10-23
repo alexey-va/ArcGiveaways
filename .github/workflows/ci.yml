@@ -8,14 +8,12 @@ on:
       - '**/*.md'
       - .agents/**
       - .codex/**
-      - src/test/e2e/**
   pull_request:
     paths-ignore:
       - docs/**
       - '**/*.md'
       - .agents/**
       - .codex/**
-      - src/test/e2e/**
   workflow_dispatch:
 
 permissions:
@@ -39,6 +37,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - uses: alexey-va/arc-core/.github/actions/verify-consumer@cd6968209a40ad80841b14cf434a234edc08922d
       - run: ./gradlew --no-daemon test shadowJar --build-cache
+      - name: Preserve unit test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ArcGiveaways-unit-reports-${{ github.sha }}
+          retention-days: 7
+          path: |
+            build/test-results/test/
+            build/reports/tests/test/
+          if-no-files-found: warn
       - name: Retain production plugin JAR
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -63,6 +71,16 @@ jobs:
       - name: Verify Docker daemon
         run: docker info
       - run: ./gradlew --no-daemon integrationTest
+      - name: Preserve storage integration reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ArcGiveaways-integration-reports-${{ github.sha }}
+          retention-days: 7
+          path: |
+            build/test-results/integrationTest/
+            build/reports/tests/integrationTest/
+          if-no-files-found: warn
 
   e2e:
     name: Real Paper E2E (Plugwright)

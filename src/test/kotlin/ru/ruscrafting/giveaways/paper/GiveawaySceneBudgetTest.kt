@@ -13,7 +13,7 @@ class GiveawaySceneBudgetTest : StringSpec({
     "all scenes retain their particle totals and share a bounded native tick" {
         val scheduler = TestTaskScheduler()
         val scope = LifecycleTaskScope(scheduler)
-        val queue = BudgetedTaskQueue(scope, nanoTime = { 0 })
+        val queue = BudgetedTaskQueue(scope, maximumSteps = 128, nanoTime = { 0 })
         var calls = 0
         val counts = mutableMapOf<GiveawayVisualScene, Int>()
         val pending = GiveawayVisualScene.entries.map { scene ->
