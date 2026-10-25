@@ -36,9 +36,9 @@ class GiveawayMenu(
                 openStart(player)
             }
         }
+        buttons += closingButton("help", text(player, MessageKey.MENU_HELP_LABEL)) { player.performCommand("giveaway help") }
         if (page > 0) buttons += button("previous", text(player, MessageKey.MENU_PREVIOUS_LABEL)) { open(player, page - 1) }
         if (page + 1 < pageCount) buttons += button("next", text(player, MessageKey.MENU_NEXT_LABEL)) { open(player, page + 1) }
-        buttons += closingButton("help", text(player, MessageKey.MENU_HELP_LABEL)) { player.performCommand("giveaway help") }
         show(
             player,
             PaperDialogScreen(
@@ -249,8 +249,10 @@ class GiveawayMenu(
         reopen: (() -> Unit)? = null,
         onDismiss: () -> Unit = {},
     ) {
-        val footer = button("back", text(player, if (escapeMode(player) == GiveawayEscapeMode.CLOSE)
+        val closes = screen.id == "arcgiveaways.menu" || escapeMode(player) == GiveawayEscapeMode.CLOSE
+        val footer = button(if (closes) "close" else "back", text(player, if (closes)
             MessageKey.MENU_CLOSE_LABEL else MessageKey.MENU_BACK_LABEL), width = 200) {}
+            .copy(closeDialogBeforeAction = closes)
         openDialog(player, screen.copy(exitButton = footer), reopen, onDismiss)
     }
 

@@ -163,7 +163,7 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
                     screen,
                     reopen,
                     onDismiss,
-                    escapePreference.mode(player) == GiveawayEscapeMode.CLOSE,
+                    screen.exitButton?.closeDialogBeforeAction ?: (escapePreference.mode(player) == GiveawayEscapeMode.CLOSE),
                 )
             },
         )

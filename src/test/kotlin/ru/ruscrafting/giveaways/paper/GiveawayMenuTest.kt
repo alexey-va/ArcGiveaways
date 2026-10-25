@@ -17,12 +17,38 @@ import ru.arc.paper.menu.PaperDialogScreen
 import ru.arc.paper.testing.MockBukkitTestRuntime
 import ru.ruscrafting.giveaways.config.GiveawayLocale
 import ru.ruscrafting.giveaways.config.MessageKey
+import ru.ruscrafting.giveaways.domain.GiveawayRecord
+import ru.ruscrafting.giveaways.domain.GiveawayStatus
+import ru.ruscrafting.giveaways.domain.ItemPayload
 import java.util.UUID
 
 class GiveawayMenuTest : StringSpec({
     lateinit var paper: MockBukkitTestRuntime
     beforeSpec { paper = MockBukkitTestRuntime.open() }
     afterSpec { paper.close() }
+
+    "catalog utilities precede both paging controls and root Close remains a footer" {
+        val (player, _) = playerWith(ItemStack(Material.DIAMOND, 5))
+        every { player.hasPermission("arcgiveaways.start") } returns true
+        val service = mockk<GiveawayService>(relaxed = true)
+        every { service.activeRecords() } returns List(15) { index ->
+            mockk<GiveawayRecord>(relaxed = true) {
+                every { hostName } returns "Host$index"
+                every { participants } returns emptyList()
+                every { item } returns ItemPayload("minecraft:diamond", 1, "", "")
+                every { status } returns GiveawayStatus.OPEN
+            }
+        }
+        val screens = mutableListOf<PaperDialogScreen>()
+        val menu = GiveawayMenu(service, locale()) { _, screen, _, _ -> screens += screen }
+        menu.open(player, 1)
+        screens.single().buttons.takeLast(4).map { it.id.value } shouldBe listOf("start", "help", "previous", "next")
+        screens.single().exitButton!!.id.value shouldBe "close"
+        screens.single().exitButton!!.closeDialogBeforeAction shouldBe true
+        click(screens.single().buttons.single { it.id.value == "start" }, player)
+        screens.last().exitButton!!.id.value shouldBe "back"
+        screens.last().exitButton!!.closeDialogBeforeAction shouldBe false
+    }
 
     "start menu shows an empty-hand error instead of only sending chat" {
         val stack = ItemStack(Material.DIAMOND, 5)
