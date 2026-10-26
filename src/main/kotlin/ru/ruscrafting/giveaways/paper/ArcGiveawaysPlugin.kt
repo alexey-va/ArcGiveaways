@@ -24,6 +24,7 @@ import ru.arc.paper.redis.PaperRedisClient
 import ru.arc.paper.api.ArcRedisService
 import ru.arc.paper.api.ArcNativeCleanupService
 import ru.arc.paper.runtime.PaperPluginRuntime
+import ru.arc.paper.runtime.PaperPluginHotload
 import ru.arc.observability.RuntimeHealthContribution
 import ru.arc.observability.RuntimeHealthState
 import ru.ruscrafting.giveaways.config.GiveawayConfig
@@ -60,7 +61,16 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
         val journal: InventoryJournalStore,
     )
 
+    private var storageClose = CompletableFuture.completedFuture(Unit)
+
+    private val hotload = PaperPluginHotload(this) {
+        stopRuntime()
+        linkedMapOf("storage" to storageClose, "native" to nativeCleanupTail)
+    }
+
     override fun onEnable() {
+        hotload.beginGeneration()
+        hotload.register()
         if (!nativeCleanupTail.isDone || nativeCleanupTail.isCompletedExceptionally) {
             logger.severe("Previous giveaway visual cleanup is still pending or failed")
             server.pluginManager.disablePlugin(this)
@@ -204,6 +214,11 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
     }
 
     override fun onDisable() {
+        hotload.prepare()
+        hotload.close()
+    }
+
+    private fun stopRuntime() {
         val lifecycle = pluginRuntime ?: return
         pluginRuntime = null
         val activeService = service.also { service = null }
@@ -214,6 +229,7 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
                 if (failure == null) failure = error else if (failure !== error) failure.addSuppressed(error)
             }
         }
+        attempt { server.servicesManager.unregisterAll(this) }
         attempt { if (::nativeWork.isInitialized) nativeWork.close() }
         attempt { if (::callbacks.isInitialized) callbacks.close() }
         attempt { lifecycle.close() }
@@ -234,6 +250,10 @@ open class ArcGiveawaysPlugin : JavaPlugin() {
                 terminalFailure?.let { throw it }
             }.join()
         }
+        attempt { hotload.retireGameplayRegistrations() }
+        attempt { ru.arc.logging.ArcLogging.close() }
+        storageClose = failure?.let { CompletableFuture.failedFuture<Unit>(it) }
+            ?: CompletableFuture.completedFuture(Unit)
         failure?.let { logger.log(java.util.logging.Level.SEVERE, "Could not close ArcGiveaways storage", it) }
         transfer = null
         Tasks.reset()

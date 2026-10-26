@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "ru.ruscrafting"
-version = "0.1.33"
+version = "0.1.34"
 description = "Cross-server proximity giveaways for RusCrafting"
 
 val integrationTestSourceSet = sourceSets.create("integrationTest") {
@@ -71,13 +71,13 @@ kotlin { jvmToolchain(25) }
 
 dependencies {
     implementation(kotlin("stdlib"))
-    implementation("ru.ruscrafting.arc:arc-core:2.7.66")
-    implementation("ru.ruscrafting.arc:arc-core-logging:2.7.66")
-    implementation("ru.ruscrafting.arc:arc-core-paper:2.7.66")
-    implementation("ru.ruscrafting.arc:arc-core-menu:2.7.66")
-    implementation("ru.ruscrafting.arc:arc-core-paper-menu:2.7.66")
-    implementation("ru.ruscrafting.arc:arc-core-redis:2.7.66")
-    compileOnly("ru.ruscrafting.arc:arc-core-paper-api:2.7.66")
+    implementation("ru.ruscrafting.arc:arc-core:2.7.69")
+    implementation("ru.ruscrafting.arc:arc-core-logging:2.7.69")
+    implementation("ru.ruscrafting.arc:arc-core-paper:2.7.69")
+    implementation("ru.ruscrafting.arc:arc-core-menu:2.7.69")
+    implementation("ru.ruscrafting.arc:arc-core-paper-menu:2.7.69")
+    implementation("ru.ruscrafting.arc:arc-core-redis:2.7.69")
+    compileOnly("ru.ruscrafting.arc:arc-core-paper-api:2.7.69")
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
@@ -86,12 +86,12 @@ dependencies {
     testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
     testImplementation("io.kotest:kotest-assertions-core:6.0.7")
     testImplementation("io.mockk:mockk:1.14.7")
-    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:2.7.66")
-    testImplementation("ru.ruscrafting.arc:arc-core-paper-api:2.7.66")
-    testImplementation("ru.ruscrafting.arc:arc-core-testing:2.7.66")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:2.7.69")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-api:2.7.69")
+    testImplementation("ru.ruscrafting.arc:arc-core-testing:2.7.69")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     "integrationTestImplementation"(sourceSets.test.get().output)
-    "integrationTestImplementation"("ru.ruscrafting.arc:arc-core-integration-testing:2.7.66")
+    "integrationTestImplementation"("ru.ruscrafting.arc:arc-core-integration-testing:2.7.69")
     configurations["integrationTestImplementation"].extendsFrom(configurations["testImplementation"])
     configurations["integrationTestRuntimeOnly"].extendsFrom(configurations["testRuntimeOnly"])
 }
